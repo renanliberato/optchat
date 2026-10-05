@@ -1,0 +1,19 @@
+The view: the whole chat between OptChat and the user, oldest first, inside
+<chat> tags, as one-line summaries. Each line is
+
+  id+n|text   the n messages from id on, summarized (newlines shown as spaces)
+
+A summary tags each item with its kind: user (the user's words), talk
+(OptChat's replies), tool (OptChat's tool calls), echo (their results), note
+(memories from before this chat), or work (the report of a subagent or
+a computer task, which the log holds as a user message starting
+"[id] "). A short message is its own line, word for word. Recent lines
+cover one message each; the older the messages, the more a line covers.
+A message not summarized yet shows as "(not summarized yet: zoom it)".
+No message appears in full, not even the last ones.
+
+Navigating: zoom(id, n) opens line id+n into the two lines of n/2
+messages it was made from; zoom(id, 1) gives message id in full. Zoom
+whenever a summary only mentions something you need, such as what your
+last reply said, a decision, a past attempt or where a file is, before
+you act, guess or ask. date(id) gives the date and time of message id.

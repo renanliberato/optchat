@@ -1,0 +1,41 @@
+{
+  "tested_at": "2026-10-04T12:17:04.224546+00:00",
+  "scope": "user",
+  "memory_home": "/Users/renan.liberato/.optchat",
+  "codex": {
+    "model": "gpt-5.6-luna",
+    "native_hooks_capture_user_and_final_reply": true,
+    "seven_hooks_trusted_and_enabled": true,
+    "global_developer_instructions_installed": true
+  },
+  "claude": {
+    "model": "sonnet",
+    "fresh_native_session": true,
+    "zoom_called": true,
+    "marker_recalled_exactly": true,
+    "native_hooks_capture_tool_and_result": true,
+    "global_CLAUDE_md_installed": true
+  },
+  "wrapper": {
+    "agent": "claude",
+    "reply": "WRAPPER_LIVE_OK",
+    "records_added": 2,
+    "no_duplicate_hook_capture": true
+  },
+  "compactor": {
+    "provider": "Claude Sonnet",
+    "live_model_compression": true,
+    "settled": true,
+    "failures": {},
+    "messages": 12,
+    "nodes": 22
+  },
+  "regression_tests": {
+    "passed": 28
+  },
+  "notes": [
+    "Installed Codex CLI rejected the configured gpt-6.1-sol and bundled gpt-5.4-mini; live Codex success used authenticated catalog model gpt-5.6-luna without changing the global default.",
+    "Native desktop UI sessions were not exercised. Local Codex app and Claude Desktop Code sessions use the installed user settings; ordinary Claude Desktop Chat has no Claude Code hooks.",
+    "Failed test user prompts remain in the append-only log."
+  ]
+}
