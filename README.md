@@ -73,6 +73,21 @@ Import accepts one JSON object per line with `text`, optional `kind` (default
 same file is idempotent. All input is validated before writes begin. `--event-key`
 on `append` also makes retries idempotent across restarts.
 
+Native Codex backfill uses a reviewed JSON manifest of `{id, title, status}`
+objects from the app's idle, unarchived chats (`idle` or `notLoaded`). It checks
+archive state through Codex's read-only database, skips internal instructions,
+reasoning and compaction snapshots, and deduplicates stable item IDs (including
+fork history) and captured hook events. Review the dry run before applying:
+
+```sh
+python -m optchat.backfill idle-chats.json --report backfill-report.json
+python -m optchat.backfill idle-chats.json --report backfill-report.json --apply
+```
+
+Recheck live app status before applying the manifest. Original timestamps are
+retained; blocks append as historical memory. Tool outputs follow OptChat's
+normal length cap. Source chats are not changed, archived, or resumed.
+
 Storage is plain, durable JSONL:
 
 ```text
