@@ -18,7 +18,8 @@ import time
 from pathlib import Path
 
 from .compactor import Compactor, summarizer_factory
-from .memory import Memory
+from .memory import Memory, Part
+from .telemetry import Telemetry
 
 DEFAULT_CONFIG = {"node_bytes": 512, "view_bytes": 128_000, "jobs": 8, "tries": 5,
                   "retry_seconds": 10, "summarizer": "claude", "summary_model": "sonnet",
@@ -50,13 +51,26 @@ class Service:
     def __init__(self, home: Path):
         config = load_config(home)
         self.memory = Memory(home, config["node_bytes"], config["view_bytes"])
-        self.compactor = Compactor(self.memory, summarizer_factory(config), config["jobs"],
+        self.telemetry = Telemetry(home)
+        factory = self.telemetry.conversation(summarizer_factory(config))
+        self.compactor = Compactor(self.memory, factory, config["jobs"],
                                    config["tries"], config["retry_seconds"],
                                    report=lambda text: print(text, file=sys.stderr, flush=True),
-                                   batch=config.get("batch_leaves", 8))
+                                   batch=config.get("batch_leaves", 8), telemetry=self.telemetry)
         self.compactor.start()
 
     def dispatch(self, method: str, params: dict, cancelled=None):
+        started, success = time.monotonic(), False
+        try:
+            result = self._dispatch(method, params, cancelled)
+            success = True
+            return result
+        finally:
+            if method != "status":
+                self.telemetry.record("fetch" if method == "context" else method,
+                                      time.monotonic() - started, success)
+
+    def _dispatch(self, method: str, params: dict, cancelled=None):
         mem, compactor = self.memory, self.compactor
         timeout = params.get("timeout")
         deadline = time.monotonic() + timeout if timeout is not None else None
@@ -96,6 +110,10 @@ class Service:
                 return {"messages": len(mem.messages), "nodes": len(mem.nodes),
                         "view_parts": len(mem.view), "view_bytes": mem.view_size(),
                         "view_budget": mem.view_bytes, "settled": mem.first() == len(mem.messages),
+                        "pending_leaves": sum(Part(0, i) not in mem.nodes for i in range(len(mem.messages))),
+                        "queued_nodes": sum(p not in compactor.busy for p in mem.candidates()),
+                        "worker_limit": compactor.jobs, "pid": os.getpid(),
+                        "metrics": self.telemetry.snapshot(),
                         "busy": [f"{p.start}+{p.n}" for p in sorted(compactor.busy)],
                         "failures": {f"{p.start}+{p.n}": e for p, e in compactor.failed.items()}}
         raise ValueError(f"Unknown method: {method}")

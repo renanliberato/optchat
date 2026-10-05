@@ -5,3 +5,6 @@ __pycache__/
 .optchat/
 dist/
 build/
+
+macos/.build/
+macos/.swiftpm/

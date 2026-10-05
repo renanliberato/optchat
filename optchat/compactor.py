@@ -68,6 +68,12 @@ class ClaudeConversation:
         if reply.get("is_error"):
             raise RuntimeError(str(reply.get("result", "Claude compactor failed")))
         self.started = True
+        usage = reply.get("usage")
+        self.last_usage = ({"input": usage.get("input_tokens", 0),
+                            "output": usage.get("output_tokens", 0),
+                            "cache_read": usage.get("cache_read_input_tokens", 0),
+                            "cache_write": usage.get("cache_creation_input_tokens", 0)}
+                           if isinstance(usage, dict) else None)
         return reply.get("result", "")
 
 
@@ -98,11 +104,17 @@ class CodexConversation:
         if result.returncode:
             raise RuntimeError(f"Codex compactor exited {result.returncode}: {result.stderr[-2000:]}")
         reply, errors = "", []
+        self.last_usage = None
         for line in result.stdout.splitlines():
             if not line.strip():
                 continue
             event = json.loads(line)
             type = event.get("type")
+            if type == "turn.completed" and isinstance(event.get("usage"), dict):
+                usage = event["usage"]
+                self.last_usage = {"input": max(0, usage.get("input_tokens", 0) - usage.get("cached_input_tokens", 0)),
+                                   "output": usage.get("output_tokens", 0),
+                                   "cache_read": usage.get("cached_input_tokens", 0)}
             if type == "error":
                 errors.append(str(event.get("message", event)))
             elif type == "turn.failed":
@@ -146,10 +158,11 @@ def scale(limit: int) -> str:
 
 class Compactor:
     def __init__(self, memory: Memory, factory, jobs: int = 8, tries: int = 5,
-                 retry: float = 10, report=print, batch: int = 8):
+                 retry: float = 10, report=print, batch: int = 8, telemetry=None):
         self.memory, self.factory = memory, factory
         self.jobs, self.tries, self.retry, self.report = jobs, tries, retry, report
         self.batch = max(1, batch)
+        self.telemetry = telemetry
         self.busy: set[Part] = set()
         self.failed: dict[Part, str] = {}
         self.retry_at: dict[Part, float] = {}
@@ -159,6 +172,13 @@ class Compactor:
 
     def start(self):
         self.thread.start()
+
+    def save_node(self, part, text):
+        with self.memory.cv:
+            existed = part in self.memory.nodes
+            self.memory.save_node(part, text)
+        if self.telemetry is not None and not existed:
+            self.telemetry.record("nodes", 0)
 
     def close(self):
         with self.memory.cv:
@@ -174,7 +194,7 @@ class Compactor:
             source = mem.source(part)
             context = mem.compact_context(part)
         if byte_size(source) <= mem.node_bytes:
-            mem.save_node(part, source)
+            self.save_node(part, source)
             return
         if part.l:
             source = "\n".join(mem.nodes[c].text.replace("\n", " ") for c in mem.children(part))
@@ -195,7 +215,7 @@ class Compactor:
             prompt = (f"That line is {size} bytes; the limit is {mem.node_bytes}. "
                       "It must end where it is cut here:\n"
                       f"{cut_bytes(line, mem.node_bytes)}| ← LIMIT")
-        mem.save_node(part, min(attempts, key=byte_size))
+        self.save_node(part, min(attempts, key=byte_size))
 
     def frontier_run(self, now: float):
         """Unbuilt leaves from the frontier that no worker owns and no retry delays."""
@@ -217,7 +237,7 @@ class Compactor:
         pending = []
         for part, source in zip(parts, sources):
             if byte_size(source) <= mem.node_bytes:
-                mem.save_node(part, source)
+                self.save_node(part, source)
             else:
                 pending.append((part, source))
         if not pending:
@@ -233,7 +253,7 @@ class Compactor:
             return
         for (part, _), line in zip(pending, lines):
             if line and byte_size(line) <= mem.node_bytes:
-                mem.save_node(part, line)
+                self.save_node(part, line)
             else:
                 self.build(part)
 

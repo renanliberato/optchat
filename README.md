@@ -226,6 +226,15 @@ injection, remote attachment, optional subagent/computer orchestration and
 automatic Git backups are not implemented. The terminal keeps its usual
 scrollback, and `export` produces a full standalone HTML browser.
 
+## macOS menu bar dashboard
+
+[OptChatBar](macos/README.md) shows local daemon health, message/summary totals,
+pending work, concurrent summarizers, disk size, hourly processing, operation
+latency, and reported summarizer tokens. Build with `./scripts/build-menubar.sh`,
+then open `dist/OptChatBar.app`. It refreshes every five seconds and can select a
+custom memory folder. Monitoring never starts the daemon or triggers model calls.
+`optchat monitor` returns the same read-only JSON snapshot.
+
 ## Development
 
 ```sh

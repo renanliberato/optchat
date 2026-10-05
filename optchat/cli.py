@@ -39,6 +39,7 @@ def parser():
     date = commands.add_parser("date")
     date.add_argument("id", type=int)
     commands.add_parser("status")
+    commands.add_parser("monitor", help="Read-only dashboard JSON; never starts the daemon")
     commands.add_parser("serve", help="Run the daemon in the foreground")
     commands.add_parser("stop", help="Stop the local daemon after in-flight compactions")
     commands.add_parser("mcp", help="Serve zoom and date over MCP stdio")
@@ -123,6 +124,9 @@ def execute(args):
         output(client.call("date", id=args.id))
     elif command == "status":
         output(client.call("status"))
+    elif command == "monitor":
+        from .monitor import snapshot
+        output(snapshot(home))
     elif command == "export":
         args.path.write_text(client.call("export"), encoding="utf-8")
         output(str(args.path.resolve()))
