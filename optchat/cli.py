@@ -25,7 +25,7 @@ def parser():
     init.add_argument("--summary-model", help="Default: sonnet for claude, gpt-6-luna for codex")
     init.add_argument("--node-bytes", type=int, default=512)
     init.add_argument("--view-bytes", type=int, default=128_000)
-    init.add_argument("--batch-leaves", type=int, default=8, help="Consecutive leaves compressed per model call")
+    init.add_argument("--batch-leaves", type=int, default=8, help="Same-level nodes compressed per model call")
     append = commands.add_parser("append", help="Append a verbatim message")
     append.add_argument("kind", choices=["user", "talk", "tool", "echo", "note"])
     append.add_argument("text", nargs="?", help="Read stdin if omitted")

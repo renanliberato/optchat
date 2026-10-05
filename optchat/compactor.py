@@ -217,22 +217,29 @@ class Compactor:
                       f"{cut_bytes(line, mem.node_bytes)}| ← LIMIT")
         self.save_node(part, min(attempts, key=byte_size))
 
-    def frontier_run(self, now: float):
-        """Unbuilt leaves from the frontier that no worker owns and no retry delays."""
+    def frontier_run(self, now: float, limit: int):
+        """Unbuilt leaves near the frontier with no owner and no retry delay.
+
+        Busy and built leaves are skipped rather than ending the run, so several
+        independent batches can be in flight at once. Only `limit` leaves are
+        collected per call; the pump asks again for the next group.
+        """
         mem = self.memory
         run = []
         for i in range(mem.first(), len(mem.messages)):
+            if len(run) >= limit:
+                break
             part = Part(0, i)
             if part in mem.nodes or part in self.busy or self.retry_at.get(part, 0) > now:
-                break
+                continue
             run.append(part)
         return run
 
     def build_batch(self, parts: list[Part]):
-        """One model call compresses consecutive leaves; anything unparseable falls back."""
+        """One model call compresses leaves or merges same-level pairs; unparseable output falls back."""
         mem = self.memory
         with mem.cv:
-            sources = [mem.messages[part.i].source for part in parts]
+            sources = [mem.source(part) for part in parts]
             context = mem.compact_context(parts[0])
         pending = []
         for part, source in zip(parts, sources):
@@ -246,7 +253,7 @@ class Compactor:
             self.build(pending[0][0])
             return
         conversation = self.factory()
-        lines = self.ask_batch(conversation, context, [source for _, source in pending])
+        lines = self.ask_batch(conversation, context, [source for _, source in pending], parts[0].l)
         if lines is None:
             for part, _ in pending:
                 self.build(part)
@@ -257,14 +264,19 @@ class Compactor:
             else:
                 self.build(part)
 
-    def ask_batch(self, conversation, context: str, sources: list[str]):
+    def ask_batch(self, conversation, context: str, sources: list[str], level: int = 0):
         mem = self.memory
         count = len(sources)
-        messages = "\n\n".join(f"MESSAGE {index + 1}:\n{source}" for index, source in enumerate(sources))
+        if level == 0:
+            noun, action = "messages", "Compress each of the following"
+            messages = "\n\n".join(f"MESSAGE {index + 1}:\n{source}" for index, source in enumerate(sources))
+        else:
+            noun, action = "pairs", "Merge each of the following"
+            messages = "\n\n".join(f"PAIR {index + 1}:\n{source}" for index, source in enumerate(sources))
         step = (f"For scale, each line is at most {mem.node_bytes} bytes:\n{scale(mem.node_bytes)}\n\n"
-                f"Compress each of the following {count} messages into its own line, in at most {mem.node_bytes} "
-                f"bytes each. Output exactly {count} lines and nothing else, one line per message, in the same "
-                f"order. Begin each line with \"N. \" where N is the message number, then the summary.\n{messages}")
+                f"{action} {count} {noun} into its own line, in at most {mem.node_bytes} "
+                f"bytes each. Output exactly {count} lines and nothing else, one line per {noun[:-1]}, in the same "
+                f"order. Begin each line with \"N. \" where N is the {noun[:-1]} number, then the summary.\n{messages}")
         reply = conversation.ask(context + "\n\n" + step).strip()
         lines = [line.strip() for line in reply.splitlines() if line.strip()]
         if len(lines) != count:
@@ -314,28 +326,58 @@ class Compactor:
                     self.busy.discard(part)
                 self.memory.cv.notify_all()
 
+    def _fill_frontier(self, now: float, quota: int):
+        """Keep at least `quota` busy slots on frontier leaves, merges notwithstanding."""
+        leaves = sum(1 for part in self.busy if part.l == 0)
+        while leaves < quota and len(self.busy) < self.jobs:
+            run = self.frontier_run(now, max(1, self.batch))
+            if not run:
+                return
+            self._submit(run)
+            leaves += len(run)
+
+    def _fill_candidates(self, now: float):
+        level, group = None, []
+        for part in self.memory.candidates():
+            if len(self.busy) >= self.jobs:
+                break
+            if part in self.busy or self.retry_at.get(part, 0) > now:
+                continue
+            if group and part.l != level:
+                self._submit(group)
+                group = []
+            level = part.l
+            group.append(part)
+            if len(group) >= self.batch:
+                self._submit(group)
+                group = []
+        if group:
+            self._submit(group)
+
     def _pump(self):
         mem = self.memory
         with mem.cv:
             while not self.stopping:
                 now = time.monotonic()
-                if self.batch > 1 and len(self.busy) < self.jobs:
-                    run = self.frontier_run(now)
-                    if len(run) > 1:
-                        group = run[:self.batch]
-                        for part in group:
-                            self.busy.add(part)
-                        self.pool.submit(self._run_batch, group)
-                for part in mem.candidates():
-                    if len(self.busy) >= self.jobs:
-                        break
-                    if part in self.busy or self.retry_at.get(part, 0) > now:
-                        continue
-                    self.busy.add(part)
-                    self.pool.submit(self._run, part)
+                # Keep merges fed so the view stays compact; an over-budget view
+                # favors merges (they are the only way down) without starving
+                # leaves, whose context is capped independently.
+                share = 4 if mem.view_size() > mem.view_bytes else 2
+                self._fill_frontier(now, max(1, self.jobs // share))
+                self._fill_candidates(now)
+                self._fill_frontier(now, self.jobs)
                 retry_times = [t for p, t in self.retry_at.items() if p not in self.busy and t > now]
                 wait = max(0.01, min(retry_times) - now) if retry_times else None
                 mem.cv.wait(wait)
+
+    def _submit(self, group: list[Part]):
+        if len(group) > 1:
+            for part in group:
+                self.busy.add(part)
+            self.pool.submit(self._run_batch, list(group))
+        else:
+            self.busy.add(group[0])
+            self.pool.submit(self._run, group[0])
 
     def settle(self, timeout: float | None = None, all_nodes: bool = False, cancelled=None):
         deadline = time.monotonic() + timeout if timeout is not None else None

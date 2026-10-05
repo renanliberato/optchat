@@ -198,9 +198,10 @@ The engine follows the specification's binary nodes, free nodes, contextual
 compression without addressing prefixes, exact UTF-8 byte accounting, five
 oversize attempts keeping the shortest, ordered leaf compression, eight jobs,
 incremental most-due merging, summary-only settling, and pre-append turn views.
-Consecutive leaf messages are compressed in one model call (`batch_leaves`,
-default 8, `1` disables batching); a reply that does not yield exactly one valid
-line per message falls back to per-message calls.
+Same-level nodes (consecutive leaves, or pairs of adjacent lines) are compressed
+in one model call (`batch_leaves`, default 8, `1` disables batching), and several
+independent frontier batches run at once; a reply that does not yield exactly one
+valid line per item falls back to per-item calls.
 Defaults are 512-byte summary targets and a 128,000-byte view budget. The budget
 counts summary text, as in the spec; addressing markup adds overhead. Oversize
 summaries or very small configured budgets can leave an irreducible view over
