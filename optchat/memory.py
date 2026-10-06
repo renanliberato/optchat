@@ -159,9 +159,15 @@ class Memory:
         for part in self.nodes:
             if part.l and any(child not in self.nodes for child in self.children(part)):
                 raise ValueError(f"Summary has missing children: {part}")
+        size, stalled = 0, False
         for i in range(len(self.messages)):
-            self.view.append(Part(0, i))
-            self.fit(i + 1)
+            part = Part(0, i)
+            self.view.append(part)
+            size += byte_size(self.text(part))
+            if not stalled:
+                size, moved = self._fit(size, i + 1)
+                if not moved:
+                    stalled = True
 
     @staticmethod
     def _write(path: Path, data: bytes) -> None:
@@ -219,7 +225,9 @@ class Memory:
     def fit(self, total: int | None = None) -> None:
         """Append/coarsen only. Select the oldest pair relative to its size."""
         total = len(self.messages) if total is None else total
-        size = self.view_size()
+        self._fit(self.view_size(), total)
+
+    def _fit(self, size: int, total: int) -> tuple[int, bool]:
         while size > self.view_bytes:
             candidates = []
             for index, (a, b) in enumerate(zip(self.view, self.view[1:])):
@@ -228,12 +236,13 @@ class Memory:
                     due = Fraction(total - a.start, 1 << (a.l + 2))
                     candidates.append((due, -index, parent))
             if not candidates:
-                break
+                return size, False
             _, negative_index, parent = max(candidates)
             index = -negative_index
             a, b = self.view[index:index + 2]
             size += byte_size(self.text(parent)) - byte_size(self.text(a)) - byte_size(self.text(b))
             self.view[index:index + 2] = [parent]
+        return size, True
 
     def save_node(self, part: Part, text: str) -> None:
         if not text.strip():
@@ -277,9 +286,19 @@ class Memory:
             if p.start >= end:
                 break
             if p not in self.nodes:
-                raise RuntimeError("Compactor context contains an unbuilt summary")
+                # Concurrent batches can be built ahead of a pending one; the
+                # view only shows what is built, so it ends at the first gap.
+                break
             texts.append(self.nodes[p].text.replace("\n", " "))
-        return "<chat>\n" + "\n".join(texts) + "\n</chat>"
+        # Keep the most recent lines within the view budget; an over-budget view
+        # (tainted by failures, or a tiny configured budget) must not overflow
+        # the provider's input limit.
+        total = sum(byte_size(text) + 1 for text in texts)
+        first = 0
+        while first < len(texts) and total > self.view_bytes:
+            total -= byte_size(texts[first]) + 1
+            first += 1
+        return "<chat>\n" + "\n".join(texts[first:]) + "\n</chat>"
 
     def render(self, require_settled: bool = True) -> str:
         with self.cv:

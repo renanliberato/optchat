@@ -73,6 +73,21 @@ Import accepts one JSON object per line with `text`, optional `kind` (default
 same file is idempotent. All input is validated before writes begin. `--event-key`
 on `append` also makes retries idempotent across restarts.
 
+Native Codex backfill uses a reviewed JSON manifest of `{id, title, status}`
+objects from the app's idle, unarchived chats (`idle` or `notLoaded`). It checks
+archive state through Codex's read-only database, skips internal instructions,
+reasoning and compaction snapshots, and deduplicates stable item IDs (including
+fork history) and captured hook events. Review the dry run before applying:
+
+```sh
+python -m optchat.backfill idle-chats.json --report backfill-report.json
+python -m optchat.backfill idle-chats.json --report backfill-report.json --apply
+```
+
+Recheck live app status before applying the manifest. Original timestamps are
+retained; blocks append as historical memory. Tool outputs follow OptChat's
+normal length cap. Source chats are not changed, archived, or resumed.
+
 Storage is plain, durable JSONL:
 
 ```text
@@ -198,9 +213,10 @@ The engine follows the specification's binary nodes, free nodes, contextual
 compression without addressing prefixes, exact UTF-8 byte accounting, five
 oversize attempts keeping the shortest, ordered leaf compression, eight jobs,
 incremental most-due merging, summary-only settling, and pre-append turn views.
-Consecutive leaf messages are compressed in one model call (`batch_leaves`,
-default 8, `1` disables batching); a reply that does not yield exactly one valid
-line per message falls back to per-message calls.
+Same-level nodes (consecutive leaves, or pairs of adjacent lines) are compressed
+in one model call (`batch_leaves`, default 8, `1` disables batching), and several
+independent frontier batches run at once; a reply that does not yield exactly one
+valid line per item falls back to per-item calls.
 Defaults are 512-byte summary targets and a 128,000-byte view budget. The budget
 counts summary text, as in the spec; addressing markup adds overhead. Oversize
 summaries or very small configured budgets can leave an irreducible view over
@@ -225,6 +241,17 @@ This version provides sequential interactive turns; mid-run user-message
 injection, remote attachment, optional subagent/computer orchestration and
 automatic Git backups are not implemented. The terminal keeps its usual
 scrollback, and `export` produces a full standalone HTML browser.
+
+## macOS menu bar dashboard
+
+[OptChatBar](macos/README.md) shows local daemon health, message/summary totals,
+pending work, concurrent summarizers, disk size, hourly processing, operation
+latency, and reported summarizer tokens. Build with `./scripts/build-menubar.sh`,
+then open `dist/OptChatBar.app`. It refreshes every five seconds and can select a
+custom memory folder. A **Memory Viewer…** button opens a window that expands
+summary lines into their children down to full messages. Monitoring and viewing
+never start the daemon or trigger model calls; `optchat monitor` returns the
+same read-only JSON snapshot and `optchat view` the view lines.
 
 ## Development
 

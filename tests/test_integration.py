@@ -70,6 +70,57 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(len(replies.splitlines()), 2)
         self.assertIn("0+0|user:", json.loads(replies.splitlines()[1])["result"]["content"][0]["text"])
 
+    def test_view_rpc_lists_lines_and_zoom_expands(self):
+        for i in range(4):
+            self.client.call("append", kind="user", text=f"message {i} " + "content " * 40)
+        self.client.call("compact", timeout=5)
+        view = self.client.call("view")
+        self.assertTrue(view["settled"])
+        self.assertEqual(view["messages"], 4)
+        self.assertEqual(view["view_budget"], 512)
+        self.assertTrue(view["lines"])
+        for line in view["lines"]:
+            self.assertIn("start", line)
+            self.assertIn("n", line)
+            self.assertIn("built", line)
+            self.assertIn("text", line)
+        top = max((line for line in view["lines"] if line["built"]), key=lambda line: line["n"])
+        if top["n"] > 1:
+            children = self.client.call("zoom", id=top["start"], n=top["n"])
+            self.assertEqual(len(children.splitlines()), 2)
+        self.assertTrue(self.client.call("zoom", id=0, n=1).startswith("0+0|user:"))
+
+    def test_monitor_tracks_real_rpc_compaction_and_restart(self):
+        from optchat.monitor import snapshot
+        for i in range(4):
+            self.client.call("append", kind="user", text=f"message {i} " + "content " * 50)
+        self.client.call("compact", timeout=5)
+        self.client.call("context", timeout=5)
+        self.client.call("zoom", id=0, n=1)
+        result = snapshot(self.home)
+        self.assertTrue(result["running"])
+        self.assertEqual(result["status"]["pending_leaves"], 0)
+        metrics = result["metrics"]
+        self.assertEqual(metrics["operations"]["nodes"]["count"], 7)
+        self.assertEqual(metrics["operations"]["zoom"]["count"], 1)
+        self.assertEqual(metrics["operations"]["fetch"]["count"], 1)
+        self.assertEqual(metrics["operations"]["compact"]["count"], 1)
+        self.assertGreater(metrics["operations"]["summarize"]["count"], 0)
+        self.assertGreater(metrics["unreported_calls"], 0)
+        self.assertNotIn("status", metrics["operations"])
+        self.assertEqual(metrics["active_summarizers"], 0)
+        self.client.call("shutdown")
+        deadline = time.monotonic() + 5
+        while socket_path(self.home).exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        offline = snapshot(self.home)
+        self.assertFalse(offline["running"])
+        self.assertIsNone(offline["metrics"]["active_summarizers"])
+        # A read-only monitor must not restart a stopped daemon.
+        self.assertFalse(socket_path(self.home).exists())
+        restarted = self.client.call("status")
+        self.assertEqual(restarted["metrics"]["operations"]["nodes"]["count"], 7)
+
     def fake_agent(self, agent):
         path = self.root / f"fake-{agent}"
         capture = self.root / f"{agent}-input.json"

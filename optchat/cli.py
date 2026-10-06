@@ -25,7 +25,7 @@ def parser():
     init.add_argument("--summary-model", help="Default: sonnet for claude, gpt-6-luna for codex")
     init.add_argument("--node-bytes", type=int, default=512)
     init.add_argument("--view-bytes", type=int, default=128_000)
-    init.add_argument("--batch-leaves", type=int, default=8, help="Consecutive leaves compressed per model call")
+    init.add_argument("--batch-leaves", type=int, default=8, help="Same-level nodes compressed per model call")
     append = commands.add_parser("append", help="Append a verbatim message")
     append.add_argument("kind", choices=["user", "talk", "tool", "echo", "note"])
     append.add_argument("text", nargs="?", help="Read stdin if omitted")
@@ -38,7 +38,9 @@ def parser():
     zoom.add_argument("n", type=int)
     date = commands.add_parser("date")
     date.add_argument("id", type=int)
+    commands.add_parser("view", help="Read-only memory view lines for the viewer window")
     commands.add_parser("status")
+    commands.add_parser("monitor", help="Read-only dashboard JSON; never starts the daemon")
     commands.add_parser("serve", help="Run the daemon in the foreground")
     commands.add_parser("stop", help="Stop the local daemon after in-flight compactions")
     commands.add_parser("mcp", help="Serve zoom and date over MCP stdio")
@@ -121,8 +123,13 @@ def execute(args):
         output(client.call("zoom", id=args.id, n=args.n))
     elif command == "date":
         output(client.call("date", id=args.id))
+    elif command == "view":
+        output(client.call("view"))
     elif command == "status":
         output(client.call("status"))
+    elif command == "monitor":
+        from .monitor import snapshot
+        output(snapshot(home))
     elif command == "export":
         args.path.write_text(client.call("export"), encoding="utf-8")
         output(str(args.path.resolve()))
