@@ -100,6 +100,12 @@ class Service:
             return mem.zoom(**params)
         if method == "date":
             return mem.date(**params)
+        if method == "view":
+            with mem.cv:
+                return {"messages": len(mem.messages), "settled": mem.first() == len(mem.messages),
+                        "view_bytes": mem.view_size(), "view_budget": mem.view_bytes,
+                        "lines": [{"start": part.start, "n": part.n, "built": part in mem.nodes,
+                                   "text": mem.text(part)} for part in mem.view]}
         if method == "compact":
             settle(all_nodes=True)
             return self.dispatch("status", {})
@@ -182,7 +188,7 @@ class Client:
             return sock
         except (FileNotFoundError, ConnectionRefusedError):
             sock.close()
-        if not self.autostart:
+        if not self.autostart or os.environ.get("OPTCHAT_NO_AUTOSTART"):
             raise RuntimeError("OptChat daemon is not running")
         log_fd = os.open(self.home / "daemon.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         log = os.fdopen(log_fd, "ab")

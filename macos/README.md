@@ -29,6 +29,16 @@ chosen with **Change…**, or `~/.optchat`, in that order. **Change…** can sel
 hidden memory folders. It never starts/stops the daemon, appends chat messages,
 or triggers model calls. **Open memory folder** reveals the local data.
 
+## Memory viewer
+
+**Memory Viewer…** in the popover footer opens a resizable window over the
+current memory view. Click a line to expand it into the two summaries it was
+made from, recursively down to full original messages; unbuilt lines are dimmed.
+**Live** refreshes the view every five seconds, and Refresh updates on demand.
+The window is read-only: it never appends messages, starts the daemon, or
+triggers model calls. It reads through `optchat view`, `optchat zoom`, and
+`optchat date` (see `macos/Sources/OptChatBar/Viewer/`).
+
 ## Measurements
 
 - **Messages / summary nodes:** durable totals already exposed by the daemon.

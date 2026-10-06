@@ -248,8 +248,10 @@ scrollback, and `export` produces a full standalone HTML browser.
 pending work, concurrent summarizers, disk size, hourly processing, operation
 latency, and reported summarizer tokens. Build with `./scripts/build-menubar.sh`,
 then open `dist/OptChatBar.app`. It refreshes every five seconds and can select a
-custom memory folder. Monitoring never starts the daemon or triggers model calls.
-`optchat monitor` returns the same read-only JSON snapshot.
+custom memory folder. A **Memory Viewer…** button opens a window that expands
+summary lines into their children down to full messages. Monitoring and viewing
+never start the daemon or trigger model calls; `optchat monitor` returns the
+same read-only JSON snapshot and `optchat view` the view lines.
 
 ## Development
 

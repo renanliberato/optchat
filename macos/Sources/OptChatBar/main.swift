@@ -10,8 +10,8 @@ final class Monitor: ObservableObject {
     @Published var refreshing = false
     @Published var home: String
     private var timer: Timer?
-    private let python: String
-    private let resources: String
+    let python: String
+    let resources: String
 
     init() {
         home = ProcessInfo.processInfo.environment["OPTCHAT_HOME"]
@@ -96,6 +96,7 @@ extension Health {
 struct Dashboard: View {
     @ObservedObject var monitor: Monitor
     var height: CGFloat = 720
+    var openViewer: () -> Void = {}
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -129,6 +130,8 @@ struct Dashboard: View {
             }
             Divider()
             HStack {
+                Button("Memory Viewer…") { openViewer() }
+                Spacer()
                 Button("Open memory folder") { NSWorkspace.shared.open(URL(fileURLWithPath: monitor.home)) }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }.keyboardShortcut("q")
@@ -251,6 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let monitor = Monitor()
     let popover = NSPopover()
     var item: NSStatusItem!
+    var viewerWindow: NSWindow?
     var layoutCheckComplete = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -258,11 +262,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.target = self
         item.button?.action = #selector(toggle)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: Dashboard(monitor: monitor))
+        popover.contentViewController = NSHostingController(
+            rootView: Dashboard(monitor: monitor, openViewer: { [weak self] in self?.openViewer() }))
         NotificationCenter.default.addObserver(self, selector: #selector(update), name: .init("OptChatUpdated"), object: nil)
         monitor.start()
         update()
         if CommandLine.arguments.contains("--show") { toggle() }
+    }
+
+    @objc func openViewer() {
+        if viewerWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(rootView: MemoryViewer(monitor: monitor)))
+            window.title = "OptChat Memory"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 760, height: 620))
+            window.isReleasedWhenClosed = false
+            window.center()
+            viewerWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        viewerWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc func update() {
@@ -297,7 +316,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             monitor.refresh()
             let available = button.window?.screen?.visibleFrame.height ?? NSScreen.main?.visibleFrame.height ?? 720
             let size = NSSize(width: 420, height: PopoverLayout.height(availableHeight: available))
-            let controller = NSHostingController(rootView: Dashboard(monitor: monitor, height: size.height))
+            let controller = NSHostingController(
+                rootView: Dashboard(monitor: monitor, height: size.height,
+                                    openViewer: { [weak self] in self?.openViewer() }))
             controller.preferredContentSize = size
             popover.contentViewController = controller
             popover.contentSize = size

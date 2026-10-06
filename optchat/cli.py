@@ -38,6 +38,7 @@ def parser():
     zoom.add_argument("n", type=int)
     date = commands.add_parser("date")
     date.add_argument("id", type=int)
+    commands.add_parser("view", help="Read-only memory view lines for the viewer window")
     commands.add_parser("status")
     commands.add_parser("monitor", help="Read-only dashboard JSON; never starts the daemon")
     commands.add_parser("serve", help="Run the daemon in the foreground")
@@ -122,6 +123,8 @@ def execute(args):
         output(client.call("zoom", id=args.id, n=args.n))
     elif command == "date":
         output(client.call("date", id=args.id))
+    elif command == "view":
+        output(client.call("view"))
     elif command == "status":
         output(client.call("status"))
     elif command == "monitor":
