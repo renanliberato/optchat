@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .memory import Memory, Part, byte_size, cut_bytes
+from . import opencode
 
 PROMPTS = Path(__file__).with_name("prompts")
 COMPACT = (PROMPTS / "compact.txt").read_text()
@@ -136,6 +137,55 @@ class CodexConversation:
         return reply
 
 
+class OpenCodeConversation(CodexConversation):
+    """Fresh OpenCode session per call; corrections resend the node transcript."""
+
+    def __init__(self, model: str = opencode.DEFAULT_MODEL, binary: str = "opencode", timeout: float = 180):
+        self.model, self.binary, self.timeout = model, binary, timeout
+        self.messages: list[tuple[str, str]] = []
+
+    def ask(self, text: str) -> str:
+        # No project instructions or files are needed for compaction.
+        with tempfile.TemporaryDirectory(prefix="optchat-summary-") as cwd:
+            result = subprocess.run(opencode.command(self.binary, self.model),
+                                    input=self.transcript(text), capture_output=True, text=True,
+                                    timeout=self.timeout, cwd=cwd,
+                                    env=opencode.environment(COMPACT, internal=True))
+        if result.returncode:
+            raise RuntimeError(f"OpenCode compactor exited {result.returncode}: {result.stderr[-2000:]}")
+        replies, errors, seen = [], [], set()
+        self.last_usage = None
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if event.get("type") == "error":
+                errors.append(json.dumps(event.get("error", event), ensure_ascii=False))
+            for kind, value, key in opencode.completed(event):
+                if kind == "talk" and key not in seen:
+                    replies.append(value)
+                    seen.add(key)
+            part = event.get("part", {})
+            if event.get("type") == "step_finish" and isinstance(part.get("tokens"), dict):
+                key = part.get("id")
+                if key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                tokens = part["tokens"]
+                usage = {"input": tokens.get("input", 0), "output": tokens.get("output", 0),
+                         "cache_read": tokens.get("cache", {}).get("read", 0),
+                         "cache_write": tokens.get("cache", {}).get("write", 0)}
+                self.last_usage = {name: (self.last_usage or {}).get(name, 0) + value
+                                   for name, value in usage.items()}
+        reply = "\n".join(replies)
+        if errors or not reply:
+            raise RuntimeError("OpenCode compactor returned no valid summary: " +
+                               ("; ".join(errors) or result.stderr[-500:]))
+        self.messages.append((text, reply))
+        return reply
+
+
 def summarizer_factory(config: dict):
     provider = config.get("summarizer", "claude")
     if provider == "claude":
@@ -147,6 +197,10 @@ def summarizer_factory(config: dict):
                                          config.get("codex_binary", "codex"),
                                          config.get("summary_timeout", 180),
                                          config.get("codex_reasoning_effort", "high"))
+    if provider == "opencode":
+        return lambda: OpenCodeConversation(config.get("summary_model", opencode.DEFAULT_MODEL),
+                                            config.get("opencode_binary", "opencode"),
+                                            config.get("summary_timeout", 180))
     if provider == "command":
         command = config.get("summary_command")
         if not command:

@@ -12,17 +12,18 @@ from pathlib import Path
 from .adapters import hook, hook_config, run_turn
 from .daemon import Client, DEFAULT_CONFIG, serve
 from .mcp import serve_stdio
+from .opencode import DEFAULT_MODEL as OPENCODE_MODEL
 
 
 def parser():
-    cli = argparse.ArgumentParser(description="Durable shared memory and fresh Codex/Claude turns")
+    cli = argparse.ArgumentParser(description="Durable shared memory and fresh Codex/Claude/OpenCode turns")
     cli.add_argument("--home", default=os.environ.get("OPTCHAT_HOME", "~/.optchat"),
                      help="Shared chat directory (default: OPTCHAT_HOME or ~/.optchat)")
     commands = cli.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="Create configuration; does not install agent hooks")
-    init.add_argument("--summarizer", choices=["claude", "codex", "command"], default="claude")
+    init.add_argument("--summarizer", choices=["claude", "codex", "opencode", "command"], default="claude")
     init.add_argument("--summary-command", help="Custom provider command, parsed as argv (no shell)")
-    init.add_argument("--summary-model", help="Default: sonnet for claude, gpt-6-luna for codex")
+    init.add_argument("--summary-model", help="Default: sonnet for claude, gpt-6-luna for codex, opencode-go/deepseek-v4.1-flash for opencode")
     init.add_argument("--node-bytes", type=int, default=512)
     init.add_argument("--view-bytes", type=int, default=128_000)
     init.add_argument("--batch-leaves", type=int, default=8, help="Same-level nodes compressed per model call")
@@ -55,7 +56,7 @@ def parser():
     hooks.add_argument("--timeout", type=float, default=540)
     for name in ("run", "chat"):
         runner = commands.add_parser(name, help="Start a fresh agent turn" if name == "run" else "Interactive fresh-turn chat")
-        runner.add_argument("--agent", choices=["codex", "claude"], default="codex")
+        runner.add_argument("--agent", choices=["codex", "claude", "opencode"], default="codex")
         runner.add_argument("--binary", help="Agent executable path (also useful for integration testing)")
         runner.add_argument("--model")
         runner.add_argument("--sandbox", choices=["read-only", "workspace-write"],
@@ -95,7 +96,7 @@ def execute(args):
             raise ValueError("Require node-bytes >= 64 and view-bytes >= node-bytes")
         if args.summarizer == "command" and not args.summary_command:
             raise ValueError("--summarizer command requires --summary-command")
-        model = args.summary_model or ("gpt-6-luna" if args.summarizer == "codex" else "sonnet")
+        model = args.summary_model or {"codex": "gpt-6-luna", "opencode": OPENCODE_MODEL}.get(args.summarizer, "sonnet")
         config = {**DEFAULT_CONFIG, "summarizer": args.summarizer, "summary_model": model,
                   "node_bytes": args.node_bytes, "view_bytes": args.view_bytes,
                   "batch_leaves": args.batch_leaves}
@@ -161,7 +162,7 @@ def execute(args):
     elif command == "chat":
         options = runner_options(args)
         print(client.call("context", timeout=args.timeout))
-        print("Enter a message; /agent codex or /agent claude switches agents; /quit exits.")
+        print("Enter a message; /agent codex, /agent claude or /agent opencode switches agents; /quit exits.")
         while True:
             try:
                 text = input("you> ")
@@ -169,7 +170,7 @@ def execute(args):
                 break
             if text == "/quit":
                 break
-            if text in {"/agent codex", "/agent claude"}:
+            if text in {"/agent codex", "/agent claude", "/agent opencode"}:
                 options["agent"] = text.split()[1]
                 print(f"Using {options['agent']} with the same memory.")
                 continue

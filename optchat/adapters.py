@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from .compactor import MASTER, VIEW_DOC, OPTCHAT_GUIDANCE
+from . import opencode
 
 
 def encode(value) -> str:
@@ -51,6 +52,10 @@ def agent_command(agent: str, home: Path, system: str, binary: str | None = None
         if permission_mode:
             command += ["--permission-mode", permission_mode]
         return command
+    if agent == "opencode":
+        if sandbox or permission_mode:
+            raise ValueError("OpenCode uses its configured permissions; --sandbox/--permission-mode are vendor-specific")
+        return opencode.command(binary or "opencode", model)
     raise ValueError(f"Unknown agent {agent}")
 
 
@@ -76,6 +81,11 @@ class Events:
     def consume(self, event: dict):
         if self.agent == "codex":
             self._codex(event)
+        elif self.agent == "opencode":
+            if event.get("type") == "error":
+                self.error = encode(event.get("error", event))
+            for kind, text, key in opencode.completed(event):
+                self.log(kind, text, key)
         else:
             self._claude(event)
 
@@ -153,13 +163,16 @@ def run_turn(client, agent: str, text: str, binary=None, model=None, cwd=None,
             system = MASTER + "\n" + OPTCHAT_GUIDANCE + "\n" + VIEW_DOC + "\n" + instructions
             command = agent_command(agent, client.home, system, binary, model, cwd, sandbox, permission_mode)
             payload = begin["view"] + "\n\n" + text
+            executable, arguments = mcp_command(client.home)
+            env = ({**os.environ, "OPTCHAT_WRAPPER": "1"} if agent != "opencode" else
+                   opencode.environment(system, [executable, *arguments]))
             # File-backed stdin avoids blocking when a very large paste is sent.
             with tempfile.TemporaryFile() as prompt:
                 prompt.write(payload.encode())
                 prompt.seek(0)
                 process = subprocess.Popen(command, stdin=prompt, stdout=subprocess.PIPE,
                                            text=True, cwd=cwd,
-                                           env={**os.environ, "OPTCHAT_WRAPPER": "1"})
+                                           env=env)
                 events = Events(client, agent, turn, show)
                 assert process.stdout is not None
                 try:

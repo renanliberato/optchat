@@ -1,6 +1,6 @@
 # OptChat
 
-One durable chat shared by Codex and Claude Code. Every wrapper turn starts a new
+One durable chat shared by Codex, Claude Code and OpenCode. Every wrapper turn starts a new
 agent process with a summary view of the entire history followed by the new user
 message. A background daemon compresses the append-only log into a binary tree;
 the agent can recover exact original messages through `zoom`.
@@ -21,19 +21,22 @@ optchat init
 optchat chat --agent codex --cwd /path/to/project --sandbox workspace-write
 ```
 
-Install and authenticate `codex` and `claude` beforehand. The default compactor
+Install and authenticate the CLI you use (`codex`, `claude` or `opencode`) beforehand. The default compactor
 uses `claude -p --model sonnet --effort medium`, with tools disabled. Its model
 calls use your Claude account. `--summarizer codex` instead runs ephemeral
 `codex exec` calls with `--summary-model` (default `gpt-6-luna`) and high
-reasoning effort; `--summarizer command` runs a custom provider.
+reasoning effort. `--summarizer opencode` uses `opencode run --format json` with
+`opencode-go/deepseek-v4.1-flash` by default (override with `--summary-model`);
+its compaction agent has all tools denied. `--summarizer command` runs a custom provider.
 
-Inside `chat`, `/agent claude` and `/agent codex` switch vendors while preserving
+Inside `chat`, `/agent claude`, `/agent codex` and `/agent opencode` switch vendors while preserving
 the same history; `/quit` exits. The daemon continues compacting after you exit.
 Input is line-based. Pipe larger messages to `run`:
 
 ```sh
 optchat run --agent codex 'Inspect the failing build'
 optchat run --agent claude 'Continue using what Codex found'
+optchat run --agent opencode --model opencode-go/deepseek-v4.1-flash 'Continue the work'
 cat request.txt | optchat run --agent codex
 optchat status
 optchat stop
@@ -44,6 +47,25 @@ instructions file (defaults to the working directory's `AGENTS.md`), and
 `--permission-mode` for Claude's tool permissions. Agent permissions otherwise
 use the vendor's configured defaults. Switching with `/agent` keeps the other
 runner options; restart `chat` to change its model or permission options.
+
+OpenCode defaults to `opencode-go/deepseek-v4.1-flash` for both chat and summaries.
+It receives OptChat instructions and its `zoom`/`date` MCP server through temporary
+inline configuration (`OPENCODE_CONFIG_CONTENT`), without editing your settings.
+Fresh sessions are created each turn; OpenCode may retain them in its local database,
+with sharing disabled. Its configured permissions apply; requests requiring approval
+are rejected by the noninteractive CLI. Codex `--sandbox` and Claude
+`--permission-mode` options are rejected for OpenCode. OpenCode lifecycle hooks
+are not supported; use the `run`/`chat` wrapper for shared-memory capture.
+Set `opencode_binary` in `config.json` to override the summarizer executable.
+For a new OpenCode-backed chat directory:
+
+```sh
+optchat --home /path/to/new/chat init --summarizer opencode
+optchat --home /path/to/new/chat chat --agent opencode
+```
+
+[OpenCode CLI](https://opencode.ai/docs/cli/) and
+[inline configuration](https://opencode.ai/docs/config/) describe the runtime interface.
 
 `OPTCHAT_HOME` or global `--home PATH` chooses a different memory directory.
 The default is `~/.optchat`, shared across projects and vendors; use separate
@@ -223,7 +245,7 @@ summaries or very small configured budgets can leave an irreducible view over
 budget; history is never truncated to force a fit.
 
 The wrappers deliberately use fresh invocations (`codex exec --ephemeral` and
-`claude -p --no-session-persistence`), without resume/continue. Hooks in a normal
+`claude -p --no-session-persistence`, or `opencode run`), without resume/continue. Hooks in a normal
 session retain that session's native context and are an approximation.
 
 CLI adapters cannot reproduce the reference API request layout, explicit cache
