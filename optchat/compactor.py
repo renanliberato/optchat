@@ -256,7 +256,7 @@ class Compactor:
         with mem.cv:
             source = mem.source(part)
             context = mem.compact_context(part)
-        if byte_size(source) <= mem.node_bytes:
+        if part.l and byte_size(source) <= mem.node_bytes:
             self.save_node(part, source)
             return
         if part.l:
@@ -306,7 +306,7 @@ class Compactor:
             context = mem.compact_context(parts[0])
         pending = []
         for part, source in zip(parts, sources):
-            if byte_size(source) <= mem.node_bytes:
+            if part.l and byte_size(source) <= mem.node_bytes:
                 self.save_node(part, source)
             else:
                 pending.append((part, source))

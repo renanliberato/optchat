@@ -5,9 +5,9 @@ talk (OptChat's replies), tool (OptChat's tool calls), echo (tool results), note
 (memories from before this chat).
 
 Over the messages grows a binary tree of one-line summaries. First, each
-message is compressed alone into a line (a short message is its own
-line). Then lines are merged in pairs: two adjacent lines become one
-line covering both, two of those become one covering four, and so on.
+message is compressed alone into a line. Then lines are merged in pairs: two
+adjacent lines become one line covering both, two of those become one
+covering four, and so on.
 Your job is one of these steps: compress one message into a line, or
 merge two adjacent lines into one.
 

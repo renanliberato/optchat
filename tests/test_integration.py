@@ -147,8 +147,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(json.loads(codex_input.read_text())["prompt"], "<chat>\n\n</chat>\n\nfirst request")
         run_turn(self.client, "claude", "second request", binary=str(claude), cwd=str(self.root), show=shown.append)
         prompt = json.loads(claude_input.read_text())["prompt"]
-        self.assertIn("user: first request", prompt)
-        self.assertIn("talk: Codex finished", prompt)
+        self.assertIn("user: decisions retained; talk: work completed", prompt)
+        self.assertNotIn("user: first request", prompt)
         self.assertNotIn("user: second request", prompt)
         self.assertTrue(prompt.endswith("\n\nsecond request"))
         self.assertEqual(shown, ["Codex finished", "Claude finished"])
