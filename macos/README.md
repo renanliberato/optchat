@@ -52,10 +52,9 @@ triggers model calls. It reads through `optchat view`, `optchat zoom`, and
   logs/config/backups/metrics; excludes symlinks. This is not filesystem allocation.
 - **Processed chart:** successfully saved nodes per hour, for the last 24 hours;
   includes verbatim copies, leaves, and merges. Hours use local display time.
-- **Latency:** arithmetic mean and call count since telemetry began. `fetch`
-  measures the `context` RPC; `compact` measures waiting for the full tree;
-  `zoom` measures exact-message/summary retrieval; `summarize` measures each
-  provider invocation including correction attempts. Failed calls are included.
+- **Latency:** `summarize` shows the median duration of the latest 30 provider
+  invocations (including correction attempts); `fetch`, `compact`, and `zoom`
+  show arithmetic means since telemetry began. Failed calls are included.
 - **Tokens:** summarizer-only reported uncached input, output, cache-read and
   cache-write tokens. Codex's cached input is subtracted from its total input;
   Claude reports these categories separately. Custom providers and failed
@@ -69,8 +68,9 @@ to finish: `optchat stop`, then `optchat status` after shutdown completes. Old
 running daemons remain readable, with unavailable fields shown as a dash.
 
 Aggregates live in `metrics.json` with owner-only permissions. Operation counts,
-latency totals/maxima, token totals, and 24 hourly buckets survive restart; the
-active-call gauge resets. No prompt/reply contents are recorded in metrics.
+latency totals/maxima, the latest 30 durations per operation, token totals, and
+24 hourly buckets survive restart; the active-call gauge resets. No prompt/reply
+contents are recorded in metrics.
 Metrics writes are best effort and do not invalidate successful memory writes.
 
 The same read-only snapshot is available through `optchat monitor`, including

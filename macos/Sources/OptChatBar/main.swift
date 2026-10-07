@@ -201,18 +201,20 @@ struct Dashboard: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 6) {
-                HStack { Text("Operation latency").font(.headline); Spacer(); Text("Mean / calls").font(.caption).foregroundStyle(.secondary) }
+                HStack { Text("Operation latency").font(.headline); Spacer(); Text("Recent median / calls").font(.caption).foregroundStyle(.secondary) }
                 ForEach(["fetch", "zoom", "compact", "summarize"], id: \.self) { name in
                     HStack {
-                        Text(name.capitalized)
+                        Text(name == "summarize" ? "Summarize (last 30)" : "\(name.capitalized) (mean)")
                         Spacer()
                         if let operation = metrics.operations[name] {
-                            Text(latency(operation.average)).monospacedDigit()
+                            let value = name == "summarize" ? operation.recentMedian : operation.average
+                            if let value { Text(latency(value)).monospacedDigit() }
+                            else { Text("Collecting samples…").foregroundStyle(.secondary) }
                             Text("\(compact(operation.count))").foregroundStyle(.secondary).monospacedDigit().frame(width: 44, alignment: .trailing)
                         } else { Text("No calls yet").foregroundStyle(.secondary) }
                     }.font(.caption)
                 }
-                Text("Fetch and compact include time waiting for summaries. Failed calls are included.")
+                Text("Summarize is the median of the latest 30 calls; other operations show lifetime means. Failed calls are included.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 6) {

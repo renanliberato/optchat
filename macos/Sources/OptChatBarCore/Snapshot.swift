@@ -5,7 +5,17 @@ public struct Operation: Codable, Sendable {
     public let errors: Int
     public let total_ms: Double
     public let max_ms: Double
+    public let recent_ms: [Double]?
     public var average: Double { count == 0 ? 0 : total_ms / Double(count) }
+    public var recentMedian: Double? {
+        guard let recent_ms, !recent_ms.isEmpty else { return nil }
+        let sorted = recent_ms.sorted()
+        let middle = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[middle - 1] + sorted[middle]) / 2
+        }
+        return sorted[middle]
+    }
 }
 
 public struct Metrics: Codable, Sendable {

@@ -9,6 +9,8 @@ from pathlib import Path
 
 
 class Telemetry:
+    RECENT_SAMPLE_LIMIT = 30
+
     def __init__(self, home: Path):
         self.path = home / "metrics.json"
         self.lock = threading.RLock()
@@ -34,6 +36,11 @@ class Telemetry:
                                    if key.isdigit() and isinstance(value, dict)}
             self.data["tokens"] = {key: value for key, value in self.data["tokens"].items()
                                    if isinstance(value, (int, float)) and value >= 0}
+            for item in self.data["operations"].values():
+                samples = item.get("recent_ms", [])
+                item["recent_ms"] = [value for value in samples
+                                     if isinstance(value, (int, float)) and value >= 0][-self.RECENT_SAMPLE_LIMIT:] \
+                    if isinstance(samples, list) else []
         self.active = 0
 
     def _save(self):
@@ -55,6 +62,8 @@ class Telemetry:
             item["errors"] += 0 if success else count
             item["total_ms"] += seconds * 1000
             item["max_ms"] = max(item["max_ms"], seconds * 1000)
+            item.setdefault("recent_ms", []).append(seconds * 1000)
+            del item["recent_ms"][:-self.RECENT_SAMPLE_LIMIT]
             hour = int(time.time() // 3600) * 3600
             bucket = self.data["hourly"].setdefault(str(hour), {})
             bucket[operation] = bucket.get(operation, 0) + count
