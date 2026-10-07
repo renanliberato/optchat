@@ -279,6 +279,11 @@ class Memory:
             return self.messages[part.i].source
         return "\n".join(self.nodes[c].text for c in self.children(part))
 
+    def part_size(self, part: Part) -> int:
+        if part.l == 0:
+            return self.messages[part.i].size
+        return sum(self.nodes[c].size for c in self.children(part)) + 1
+
     def compact_context(self, part: Part) -> str:
         end = part.start if part.l == 0 else part.end
         texts = []

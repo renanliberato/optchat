@@ -256,7 +256,8 @@ class Compactor:
         with mem.cv:
             source = mem.source(part)
             context = mem.compact_context(part)
-        if part.l and byte_size(source) <= mem.node_bytes:
+            size = mem.part_size(part)
+        if size <= mem.node_bytes:
             self.save_node(part, source)
             return
         if part.l:
@@ -302,11 +303,12 @@ class Compactor:
         """One model call compresses leaves or merges same-level pairs; unparseable output falls back."""
         mem = self.memory
         with mem.cv:
+            sizes = [mem.part_size(part) for part in parts]
             sources = [mem.source(part) for part in parts]
             context = mem.compact_context(parts[0])
         pending = []
-        for part, source in zip(parts, sources):
-            if part.l and byte_size(source) <= mem.node_bytes:
+        for part, source, size in zip(parts, sources, sizes):
+            if size <= mem.node_bytes:
                 self.save_node(part, source)
             else:
                 pending.append((part, source))

@@ -69,38 +69,29 @@ class MemoryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Another writer"):
             Memory(self.home)
 
-    def test_free_merge_nodes_and_zoom(self):
+    def test_free_nodes_and_zoom(self):
         self.memory.append("user", "keep this")
         self.memory.append("talk", "done")
-
-        class Short:
-            def ask(self, text):
-                return "user: kept" if "keep this" in text else "talk: done"
-
-        worker = Compactor(self.memory, Short)
+        factory = unittest.mock.Mock(side_effect=AssertionError("No model call for free nodes"))
+        worker = Compactor(self.memory, factory)
         worker.build(Part(0, 0))
         worker.build(Part(0, 1))
-        worker.close()
-        factory = unittest.mock.Mock(side_effect=AssertionError("No model call for free merges"))
-        worker = Compactor(self.memory, factory)
         worker.build(Part(1, 0))
         worker.close()
-        self.assertEqual(self.memory.nodes[Part(1, 0)].text, "user: kept\ntalk: done")
-        self.assertEqual(self.memory.zoom(0, 2), "0+1|user: kept\n1+1|talk: done")
+        self.assertEqual(self.memory.nodes[Part(1, 0)].text, "user: keep this\ntalk: done")
+        self.assertEqual(self.memory.zoom(0, 2), "0+1|user: keep this\n1+1|talk: done")
         self.assertTrue(self.memory.date(0))
         for id, n in [(-1, 1), (1, 2), (0, 3), (0, 4), (True, 1), (0, True)]:
             with self.assertRaises(ValueError):
                 self.memory.zoom(id, n)
 
-    def test_short_leaf_is_model_summarized(self):
+    def test_free_leaf_is_verbatim_including_trailing_whitespace(self):
         self.memory.append("user", "exact text  \n")
-        factory = unittest.mock.Mock(return_value=Reply())
+        factory = unittest.mock.Mock(side_effect=AssertionError("No model call for free leaves"))
         worker = Compactor(self.memory, factory)
         worker.build(Part(0, 0))
         worker.close()
-        self.assertEqual(factory.call_count, 1)
-        self.assertEqual(self.memory.nodes[Part(0, 0)].text,
-                         "user: preserve decisions; talk: completed work")
+        self.assertEqual(self.memory.nodes[Part(0, 0)].text, "user: exact text  \n")
         self.assertEqual(self.memory.zoom(0, 1), "0+0|user: exact text  \n")
 
     def test_no_partial_raw_messages_in_view(self):
@@ -206,12 +197,12 @@ class CompactorTests(unittest.TestCase):
             worker.build(Part(0, 0))
             worker.build(Part(0, 1))
             worker.close()
-            self.assertEqual(factory.call_count, 2)
-            self.assertIn("<chat>\nuser: condensed\n</chat>", calls[1])
-            self.assertNotIn("0+1|", calls[1])
-            self.assertIn("full source " * 100, calls[1])
-            self.assertIn("That line is 80 bytes", calls[2])
-            self.assertEqual(mem.nodes[Part(0, 0)].text, "user: condensed")
+            self.assertEqual(factory.call_count, 1)
+            self.assertIn("<chat>\nuser: context first\n</chat>", calls[0])
+            self.assertNotIn("0+1|", calls[0])
+            self.assertIn("full source " * 100, calls[0])
+            self.assertIn("That line is 80 bytes", calls[1])
+            self.assertEqual(mem.nodes[Part(0, 0)].text, "user: context first")
             self.assertEqual(mem.nodes[Part(0, 1)].text, "user: condensed")
 
     def test_shortest_attempt_after_five_tries(self):
@@ -252,7 +243,7 @@ class CompactorTests(unittest.TestCase):
             self.assertEqual([mem.nodes[Part(0, i)].text for i in range(3)],
                              ["user: batch 0", "user: batch 1", "user: batch 2"])
 
-    def test_batch_summarizes_short_messages_too(self):
+    def test_batch_direct_saves_short_messages_without_model(self):
         with tempfile.TemporaryDirectory() as folder, Memory(Path(folder), 64, 256) as mem:
             mem.append("user", "long one " * 20)
             mem.append("echo", "ok")
@@ -262,16 +253,17 @@ class CompactorTests(unittest.TestCase):
             class Batch:
                 def ask(self, prompt):
                     calls.append(prompt)
-                    return "user: first\nuser: second\nuser: third"
+                    return "user: first\nuser: second"
 
             factory = unittest.mock.Mock(return_value=Batch())
             worker = Compactor(mem, factory, batch=8)
             worker.build_batch([Part(0, 0), Part(0, 1), Part(0, 2)])
             worker.close()
             self.assertEqual(factory.call_count, 1)
-            self.assertIn("MESSAGE 2:", calls[0])
-            self.assertEqual([mem.nodes[Part(0, i)].text for i in range(3)],
-                             ["user: first", "user: second", "user: third"])
+            self.assertNotIn("echo: ok", calls[0])
+            self.assertEqual(mem.nodes[Part(0, 1)].text, "echo: ok")
+            self.assertEqual(mem.nodes[Part(0, 0)].text, "user: first")
+            self.assertEqual(mem.nodes[Part(0, 2)].text, "user: second")
 
     def test_batch_parses_numbered_lines(self):
         with tempfile.TemporaryDirectory() as folder, Memory(Path(folder), 64, 256) as mem:
