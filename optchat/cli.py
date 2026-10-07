@@ -21,9 +21,11 @@ def parser():
                      help="Shared chat directory (default: OPTCHAT_HOME or ~/.optchat)")
     commands = cli.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="Create configuration; does not install agent hooks")
-    init.add_argument("--summarizer", choices=["claude", "codex", "opencode", "command"], default="claude")
+    init.add_argument("--summarizer", choices=["claude", "codex", "opencode", "openrouter", "command"],
+                      default="claude")
     init.add_argument("--summary-command", help="Custom provider command, parsed as argv (no shell)")
-    init.add_argument("--summary-model", help="Default: sonnet for claude, gpt-6-luna for codex, opencode-go/deepseek-v4.1-flash for opencode")
+    init.add_argument("--summary-model", help="Default: sonnet for claude, gpt-6-luna for codex, "
+                                             "opencode-go/deepseek-v4.1-flash for opencode, openai/gpt-6-luna for openrouter")
     init.add_argument("--node-bytes", type=int, default=512)
     init.add_argument("--view-bytes", type=int, default=128_000)
     init.add_argument("--batch-leaves", type=int, default=8, help="Same-level nodes compressed per model call")
@@ -96,7 +98,8 @@ def execute(args):
             raise ValueError("Require node-bytes >= 64 and view-bytes >= node-bytes")
         if args.summarizer == "command" and not args.summary_command:
             raise ValueError("--summarizer command requires --summary-command")
-        model = args.summary_model or {"codex": "gpt-6-luna", "opencode": OPENCODE_MODEL}.get(args.summarizer, "sonnet")
+        model = args.summary_model or {"codex": "gpt-6-luna", "opencode": OPENCODE_MODEL,
+                                       "openrouter": "openai/gpt-6-luna"}.get(args.summarizer, "sonnet")
         config = {**DEFAULT_CONFIG, "summarizer": args.summarizer, "summary_model": model,
                   "node_bytes": args.node_bytes, "view_bytes": args.view_bytes,
                   "batch_leaves": args.batch_leaves}

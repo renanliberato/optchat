@@ -27,7 +27,16 @@ calls use your Claude account. `--summarizer codex` instead runs ephemeral
 `codex exec` calls with `--summary-model` (default `gpt-6-luna`) and high
 reasoning effort. `--summarizer opencode` uses `opencode run --format json` with
 `opencode-go/deepseek-v4.1-flash` by default (override with `--summary-model`);
-its compaction agent has all tools denied. `--summarizer command` runs a custom provider.
+its compaction agent has all tools denied. `--summarizer openrouter` calls
+OpenRouter's chat-completions API directly, without any agent harness, using
+`openai/gpt-6-luna` and low reasoning effort by default (override the model
+with `--summary-model` and the effort with `openrouter_reasoning_effort`); it
+reads `openrouter_api_key` from `config.json`, falling back to
+`OPENROUTER_API_KEY` in the daemon's environment. Every request demands
+zero data retention (`provider.zdr` plus `data_collection: deny`), so a model
+with no ZDR endpoint is unavailable; `openrouter_provider` adds further routing
+preferences (for example `{"sort": "price"}`) without relaxing that. `--summarizer command`
+runs a custom provider.
 
 Inside `chat`, `/agent claude`, `/agent codex` and `/agent opencode` switch vendors while preserving
 the same history; `/quit` exits. The daemon continues compacting after you exit.

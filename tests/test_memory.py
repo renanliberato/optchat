@@ -202,6 +202,7 @@ class CompactorTests(unittest.TestCase):
             self.assertNotIn("0+1|", calls[0])
             self.assertIn("full source " * 100, calls[0])
             self.assertIn("That line is 80 bytes", calls[1])
+            self.assertIn("Output only the shortened line", calls[1])
             self.assertEqual(mem.nodes[Part(0, 0)].text, "user: context first")
             self.assertEqual(mem.nodes[Part(0, 1)].text, "user: condensed")
 
@@ -221,6 +222,26 @@ class CompactorTests(unittest.TestCase):
             worker.build(Part(0, 0))
             worker.close()
             self.assertEqual(mem.nodes[Part(0, 0)].size, 80)
+
+    def test_correction_echo_is_rejected_and_retried(self):
+        with tempfile.TemporaryDirectory() as folder, Memory(Path(folder), 64, 256) as mem:
+            mem.append("user", "source" * 100)
+
+            class Echo:
+                index = 0
+
+                def ask(self, prompt):
+                    replies = ["s" * 90,
+                               "user: Prior line was 90 bytes; enforce the limit",
+                               "user: condensed"]
+                    reply = replies[self.index]
+                    self.index += 1
+                    return reply
+
+            worker = Compactor(mem, Echo)
+            worker.build(Part(0, 0))
+            worker.close()
+            self.assertEqual(mem.nodes[Part(0, 0)].text, "user: condensed")
 
     def test_batch_leaves_compress_in_one_call_and_save_each(self):
         with tempfile.TemporaryDirectory() as folder, Memory(Path(folder), 64, 256) as mem:

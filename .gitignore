@@ -3,6 +3,8 @@ __pycache__/
 *.egg-info/
 .venv/
 .optchat/
+.env
+.DS_Store
 dist/
 build/
 

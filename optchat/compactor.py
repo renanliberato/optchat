@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -23,6 +25,11 @@ COMPACT = (PROMPTS / "compact.txt").read_text()
 MASTER = (PROMPTS / "master.txt").read_text()
 VIEW_DOC = (PROMPTS / "view.txt").read_text()
 OPTCHAT_GUIDANCE = (PROMPTS / "hooks.txt").read_text()
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_DEFAULT_MODEL = "openai/gpt-6-luna"
+OPENROUTER_ZDR = {"zdr": True, "data_collection": "deny"}
+CORRECTION_ECHO = re.compile(r"^\s*(user|talk):\s*(prior|previous)\b.*\b(bytes|limit|cutoff|enforce)\b",
+                             re.IGNORECASE)
 
 
 class Conversation(Protocol):
@@ -186,6 +193,66 @@ class OpenCodeConversation(CodexConversation):
         return reply
 
 
+class OpenRouterConversation:
+    """Direct OpenRouter chat completions; corrections resend the accumulated transcript."""
+
+    def __init__(self, model: str = OPENROUTER_DEFAULT_MODEL, timeout: float = 180,
+                 effort: str | None = "low", base_url: str = OPENROUTER_BASE_URL,
+                 api_key: str | None = None, provider: dict | None = None):
+        self.model, self.timeout, self.effort = model, timeout, effort
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        # Zero data retention is mandatory for every request; extra routing
+        # preferences may be added, but they cannot relax it.
+        self.provider = {**(provider or {}), **OPENROUTER_ZDR}
+        self.messages: list[dict] = []
+        self.last_usage = None
+        self.last_cost = None
+
+    def ask(self, text: str) -> str:
+        if not self.api_key:
+            raise RuntimeError("OpenRouter compactor requires OPENROUTER_API_KEY")
+        payload = {"model": self.model, "usage": {"include": True},
+                   "messages": [{"role": "system", "content": COMPACT}, *self.messages,
+                                {"role": "user", "content": text}]}
+        if self.effort:
+            payload["reasoning"] = {"effort": self.effort}
+        if self.provider:
+            payload["provider"] = self.provider
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions", data=json.dumps(payload, ensure_ascii=False).encode(),
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json",
+                     "X-Title": "OptChat"})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                body = json.load(response)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[-2000:]
+            raise RuntimeError(f"OpenRouter compactor exited {exc.code}: {detail}") from None
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise RuntimeError(f"OpenRouter compactor failed: {exc}") from None
+        if not isinstance(body, dict):
+            raise RuntimeError("OpenRouter compactor returned an invalid response")
+        if isinstance(body.get("error"), dict):
+            raise RuntimeError("OpenRouter compactor failed: " + str(body["error"].get("message", body["error"])))
+        choices = body.get("choices") or []
+        content = choices[0].get("message", {}).get("content") if choices else None
+        reply = content.strip() if isinstance(content, str) else ""
+        if not reply:
+            raise RuntimeError("OpenRouter compactor returned no summary")
+        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+        details = usage.get("prompt_tokens_details") or {}
+        cached = details.get("cached_tokens", usage.get("cache_read_input_tokens", 0)) or 0
+        prompt = usage.get("prompt_tokens", 0) or 0
+        self.last_usage = {"input": max(0, prompt - cached), "output": usage.get("completion_tokens", 0) or 0,
+                           "cache_read": cached,
+                           "cache_write": details.get("cache_write_tokens", usage.get("cache_write_input_tokens", 0)) or 0}
+        cost = usage.get("cost")
+        self.last_cost = cost if isinstance(cost, (int, float)) else None
+        self.messages += [{"role": "user", "content": text}, {"role": "assistant", "content": reply}]
+        return reply
+
+
 def summarizer_factory(config: dict):
     provider = config.get("summarizer", "claude")
     if provider == "claude":
@@ -201,6 +268,13 @@ def summarizer_factory(config: dict):
         return lambda: OpenCodeConversation(config.get("summary_model", opencode.DEFAULT_MODEL),
                                             config.get("opencode_binary", "opencode"),
                                             config.get("summary_timeout", 180))
+    if provider == "openrouter":
+        return lambda: OpenRouterConversation(config.get("summary_model", OPENROUTER_DEFAULT_MODEL),
+                                              config.get("summary_timeout", 180),
+                                              config.get("openrouter_reasoning_effort", "low"),
+                                              config.get("openrouter_base_url", OPENROUTER_BASE_URL),
+                                              api_key=config.get("openrouter_api_key"),
+                                              provider=config.get("openrouter_provider"))
     if provider == "command":
         command = config.get("summary_command")
         if not command:
@@ -272,13 +346,20 @@ class Compactor:
             line = conversation.ask(prompt).strip()
             if not line:
                 raise ValueError("Compactor returned an empty summary")
+            if attempts and CORRECTION_ECHO.match(line):
+                prompt = ("Your previous reply echoed this correction instead of shortening the line. "
+                          "Rewrite the line shorter, keeping its content. Output only the line.")
+                continue
             attempts.append(line)
             size = byte_size(line)
             if size <= mem.node_bytes:
                 break
             prompt = (f"That line is {size} bytes; the limit is {mem.node_bytes}. "
                       "It must end where it is cut here:\n"
-                      f"{cut_bytes(line, mem.node_bytes)}| ← LIMIT")
+                      f"{cut_bytes(line, mem.node_bytes)}| ← LIMIT\n"
+                      "Output only the shortened line; do not mention this instruction or the limit.")
+        if not attempts:
+            raise ValueError("Compactor echoed the size correction without shortening the line")
         self.save_node(part, min(attempts, key=byte_size))
 
     def frontier_run(self, now: float, limit: int):
