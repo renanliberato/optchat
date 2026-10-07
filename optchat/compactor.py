@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from collections import OrderedDict
 import os
 import re
 import shlex
@@ -13,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Protocol
@@ -28,6 +31,7 @@ OPTCHAT_GUIDANCE = (PROMPTS / "hooks.txt").read_text()
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_DEFAULT_MODEL = "openai/gpt-6-luna"
 OPENROUTER_ZDR = {"zdr": True, "data_collection": "deny"}
+RECENT_CHAT = "\n\n<recent_chat>\n"
 CORRECTION_ECHO = re.compile(r"^\s*(user|talk):\s*(prior|previous)\b.*\b(bytes|limit|cutoff|enforce)\b",
                              re.IGNORECASE)
 
@@ -193,28 +197,87 @@ class OpenCodeConversation(CodexConversation):
         return reply
 
 
+class PrefixWarmup:
+    """Let one real request warm a new prefix before parallel workers use it.
+
+    No synthetic warm-up call. Locks apply only while a prefix is cold; warm
+    requests run concurrently. Failed requests release the lock without warming.
+    """
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.entries = OrderedDict()
+
+    @contextmanager
+    def use(self, prefix):
+        key = hashlib.sha256((COMPACT + prefix).encode()).digest()
+        with self.lock:
+            entry = self.entries.setdefault(key, [threading.Lock(), 0.0])
+            self.entries.move_to_end(key)
+            if len(self.entries) > 64:
+                self.entries.popitem(last=False)
+        if time.monotonic() - entry[1] < 240:
+            yield
+            return
+        with entry[0]:
+            # A preceding worker may have warmed this while we were waiting.
+            cold = time.monotonic() - entry[1] >= 240
+            if cold:
+                yield
+                entry[1] = time.monotonic()
+                return
+        yield
+
+
 class OpenRouterConversation:
     """Direct OpenRouter chat completions; corrections resend the accumulated transcript."""
 
     def __init__(self, model: str = OPENROUTER_DEFAULT_MODEL, timeout: float = 180,
                  effort: str | None = "low", base_url: str = OPENROUTER_BASE_URL,
-                 api_key: str | None = None, provider: dict | None = None):
+                 api_key: str | None = None, provider: dict | None = None,
+                 session_id: str | None = None, explicit_cache: bool | None = None,
+                 warmup: PrefixWarmup | None = None):
         self.model, self.timeout, self.effort = model, timeout, effort
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         # Zero data retention is mandatory for every request; extra routing
         # preferences may be added, but they cannot relax it.
         self.provider = {**(provider or {}), **OPENROUTER_ZDR}
+        self.session_id = session_id or "optchat-summary-" + uuid.uuid4().hex
+        self.warmup = warmup
+        # Explicit breakpoints are supported by OpenAI GPT-5.6+; other models
+        # keep automatic caching unless deliberately opted in.
+        self.explicit_cache = (bool(re.match(r"^openai/gpt-(?:6(?:[.-]|$)|5\.[6-9](?:[.-]|$))", model))
+                               if explicit_cache is None else explicit_cache)
         self.messages: list[dict] = []
         self.last_usage = None
         self.last_cost = None
+        self.last_provider = None
+        self.last_cost_details = None
 
     def ask(self, text: str) -> str:
+        prefix, separator, _ = text.partition(RECENT_CHAT)
+        if self.warmup is not None and separator:
+            with self.warmup.use(prefix):
+                return self._ask(text)
+        return self._ask(text)
+
+    def _ask(self, text: str) -> str:
         if not self.api_key:
             raise RuntimeError("OpenRouter compactor requires OPENROUTER_API_KEY")
+        content = text
+        if self.explicit_cache:
+            prefix, separator, suffix = text.partition(RECENT_CHAT)
+            if separator:
+                content = [{"type": "text", "text": prefix,
+                            "prompt_cache_breakpoint": {"mode": "explicit"}},
+                           {"type": "text", "text": separator + suffix}]
         payload = {"model": self.model, "usage": {"include": True},
+                   "session_id": self.session_id,
                    "messages": [{"role": "system", "content": COMPACT}, *self.messages,
-                                {"role": "user", "content": text}]}
+                                {"role": "user", "content": content}]}
+        if self.explicit_cache:
+            # Only the shared prefix gets a write; unique sources do not.
+            payload["prompt_cache_options"] = {"mode": "explicit"}
         if self.effort:
             payload["reasoning"] = {"effort": self.effort}
         if self.provider:
@@ -236,8 +299,8 @@ class OpenRouterConversation:
         if isinstance(body.get("error"), dict):
             raise RuntimeError("OpenRouter compactor failed: " + str(body["error"].get("message", body["error"])))
         choices = body.get("choices") or []
-        content = choices[0].get("message", {}).get("content") if choices else None
-        reply = content.strip() if isinstance(content, str) else ""
+        reply_content = choices[0].get("message", {}).get("content") if choices else None
+        reply = reply_content.strip() if isinstance(reply_content, str) else ""
         if not reply:
             raise RuntimeError("OpenRouter compactor returned no summary")
         usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
@@ -249,7 +312,9 @@ class OpenRouterConversation:
                            "cache_write": details.get("cache_write_tokens", usage.get("cache_write_input_tokens", 0)) or 0}
         cost = usage.get("cost")
         self.last_cost = cost if isinstance(cost, (int, float)) else None
-        self.messages += [{"role": "user", "content": text}, {"role": "assistant", "content": reply}]
+        self.last_provider = body.get("provider")
+        self.last_cost_details = usage.get("cost_details")
+        self.messages += [{"role": "user", "content": content}, {"role": "assistant", "content": reply}]
         return reply
 
 
@@ -269,12 +334,17 @@ def summarizer_factory(config: dict):
                                             config.get("opencode_binary", "opencode"),
                                             config.get("summary_timeout", 180))
     if provider == "openrouter":
+        session = "optchat-summary-" + uuid.uuid4().hex
+        warmup = PrefixWarmup()
         return lambda: OpenRouterConversation(config.get("summary_model", OPENROUTER_DEFAULT_MODEL),
                                               config.get("summary_timeout", 180),
                                               config.get("openrouter_reasoning_effort", "low"),
                                               config.get("openrouter_base_url", OPENROUTER_BASE_URL),
                                               api_key=config.get("openrouter_api_key"),
-                                              provider=config.get("openrouter_provider"))
+                                              provider=config.get("openrouter_provider"),
+                                              session_id=session,
+                                              explicit_cache=config.get("openrouter_explicit_cache"),
+                                              warmup=warmup)
     if provider == "command":
         command = config.get("summary_command")
         if not command:
@@ -295,11 +365,14 @@ def scale(limit: int) -> str:
 
 class Compactor:
     def __init__(self, memory: Memory, factory, jobs: int = 8, tries: int = 5,
-                 retry: float = 10, report=print, batch: int = 8, telemetry=None):
+                 retry: float = 10, report=print, batch: int = 8, telemetry=None,
+                 cache_window: int = 32):
         self.memory, self.factory = memory, factory
         self.jobs, self.tries, self.retry, self.report = jobs, tries, retry, report
         self.batch = max(1, batch)
         self.telemetry = telemetry
+        self.cache_window = max(0, cache_window)
+        self.contexts: OrderedDict[tuple[int, int], tuple[int, str]] = OrderedDict()
         self.busy: set[Part] = set()
         self.failed: dict[Part, str] = {}
         self.retry_at: dict[Part, float] = {}
@@ -329,11 +402,12 @@ class Compactor:
         mem = self.memory
         with mem.cv:
             source = mem.source(part)
-            context = mem.compact_context(part)
             size = mem.part_size(part)
         if size <= mem.node_bytes:
             self.save_node(part, source)
             return
+        with mem.cv:
+            context = self.context(part)
         if part.l:
             source = "\n".join(mem.nodes[c].text.replace("\n", " ") for c in mem.children(part))
         action = "Merge these two lines" if part.l else "Compress this message"
@@ -362,6 +436,44 @@ class Compactor:
             raise ValueError("Compactor echoed the size correction without shortening the line")
         self.save_node(part, min(attempts, key=byte_size))
 
+    def context(self, part: Part) -> str:
+        """Freeze history per 32 nodes; refresh only the bounded recent tail.
+
+        The cache prefix survives node saves and view coarsening. Each level has
+        its own windows; out-of-order jobs cannot see future context. cv held.
+        No extra model calls, accumulated conversations, or synthetic padding.
+        """
+        mem = self.memory
+        if not self.cache_window:
+            return mem.compact_context(part)
+        key = (part.l, part.i // self.cache_window)
+        anchor = key[1] * self.cache_window * part.n
+        if key not in self.contexts:
+            # Reserve room for fresh context without exceeding the view budget.
+            texts = mem.context_lines(0, anchor)
+            budget = max(0, mem.view_bytes - min(8192, mem.view_bytes // 4))
+            kept, total = [], 0
+            for text in reversed(texts):
+                if total + byte_size(text) + 1 > budget:
+                    break
+                kept.append(text)
+                total += byte_size(text) + 1
+            prefix = "<chat>\n" + "\n".join(reversed(kept)) + "\n</chat>"
+            self.contexts[key] = (total, prefix)
+            if len(self.contexts) > 64:
+                self.contexts.popitem(last=False)
+        self.contexts.move_to_end(key)
+        used, prefix = self.contexts[key]
+        end = part.start if part.l == 0 else part.end
+        texts = mem.context_lines(anchor, end)
+        kept, total = [], 0
+        for text in reversed(texts):
+            if total + byte_size(text) + 1 > mem.view_bytes - used:
+                break
+            kept.append(text)
+            total += byte_size(text) + 1
+        return prefix + RECENT_CHAT + "\n".join(reversed(kept)) + "\n</recent_chat>"
+
     def frontier_run(self, now: float, limit: int):
         """Unbuilt leaves near the frontier with no owner and no retry delay.
 
@@ -386,7 +498,7 @@ class Compactor:
         with mem.cv:
             sizes = [mem.part_size(part) for part in parts]
             sources = [mem.source(part) for part in parts]
-            context = mem.compact_context(parts[0])
+            context = self.context(parts[0])
         pending = []
         for part, source, size in zip(parts, sources, sizes):
             if size <= mem.node_bytes:

@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from optchat.cli import execute, parser
-from optchat.compactor import (COMPACT, OPENROUTER_DEFAULT_MODEL, OpenRouterConversation,
+from optchat.compactor import (COMPACT, RECENT_CHAT, OPENROUTER_DEFAULT_MODEL, OpenRouterConversation,
                                summarizer_factory)
 
 
@@ -75,6 +75,36 @@ class OpenRouterTests(unittest.TestCase):
         self.reply()
         OpenRouterConversation(api_key="secret", base_url=self.base, timeout=5, effort=None).ask("x")
         self.assertNotIn("reasoning", self.server.requests[0]["body"])
+
+    def test_shared_prefix_only_is_cached_and_survives_correction(self):
+        self.reply("oversize")
+        self.reply("short")
+        c = OpenRouterConversation(api_key="secret", base_url=self.base)
+        c.ask("frozen history" + RECENT_CHAT + "fresh tail\n</recent_chat>\nsource")
+        c.ask("shorten it")
+        first, correction = [r["body"] for r in self.server.requests]
+        self.assertEqual(first["prompt_cache_options"], {"mode": "explicit"})
+        blocks = first["messages"][1]["content"]
+        self.assertEqual(blocks[0]["text"], "frozen history")
+        self.assertIn("prompt_cache_breakpoint", blocks[0])
+        self.assertNotIn("prompt_cache_breakpoint", blocks[1])
+        self.assertEqual(correction["messages"][1]["content"], blocks)
+        self.assertEqual(first["session_id"], correction["session_id"])
+
+    def test_factory_shares_routing_across_independent_nodes(self):
+        factory = summarizer_factory({"summarizer": "openrouter"})
+        a, b = factory(), factory()
+        self.assertEqual(a.session_id, b.session_id)
+        self.assertIsNot(a.messages, b.messages)
+        self.assertNotEqual(a.session_id, summarizer_factory({"summarizer": "openrouter"})().session_id)
+
+    def test_unsupported_model_preserves_automatic_cache(self):
+        self.reply()
+        c = OpenRouterConversation(model="xiaomi/mimo-v2.6-flash", api_key="secret", base_url=self.base)
+        c.ask("history" + RECENT_CHAT + "tail")
+        body = self.server.requests[0]["body"]
+        self.assertNotIn("prompt_cache_options", body)
+        self.assertIsInstance(body["messages"][1]["content"], str)
 
     def test_provider_preferences_are_forwarded(self):
         self.reply()

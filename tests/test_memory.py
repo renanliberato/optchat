@@ -193,7 +193,7 @@ class CompactorTests(unittest.TestCase):
                             else "user: condensed")
 
             factory = unittest.mock.Mock(return_value=Oversize())
-            worker = Compactor(mem, factory)
+            worker = Compactor(mem, factory, cache_window=0)
             worker.build(Part(0, 0))
             worker.build(Part(0, 1))
             worker.close()

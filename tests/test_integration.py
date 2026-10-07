@@ -53,6 +53,8 @@ class IntegrationTests(unittest.TestCase):
             ids = [future.result()["i"] for future in futures]
         self.assertEqual(sorted(ids), list(range(12)))
         status = self.client.call("compact", timeout=5)
+        self.assertEqual(status["summary_cache_window"], 32)
+        self.assertGreater(status["cached_context_windows"], 0)
         self.assertTrue(status["settled"])
         self.assertEqual(status["nodes"], 22)  # 12 + 6 + 3 + 1
         view = self.client.call("context", timeout=5)

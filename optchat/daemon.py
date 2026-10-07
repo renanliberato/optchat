@@ -23,7 +23,7 @@ from .telemetry import Telemetry
 
 DEFAULT_CONFIG = {"node_bytes": 512, "view_bytes": 128_000, "jobs": 8, "tries": 5,
                   "retry_seconds": 10, "summarizer": "claude", "summary_model": "sonnet",
-                  "summary_timeout": 180, "batch_leaves": 8}
+                  "summary_timeout": 180, "batch_leaves": 8, "summary_cache_window": 32}
 
 
 def socket_path(home: Path) -> Path:
@@ -56,7 +56,8 @@ class Service:
         self.compactor = Compactor(self.memory, factory, config["jobs"],
                                    config["tries"], config["retry_seconds"],
                                    report=lambda text: print(text, file=sys.stderr, flush=True),
-                                   batch=config.get("batch_leaves", 8), telemetry=self.telemetry)
+                                   batch=config.get("batch_leaves", 8), telemetry=self.telemetry,
+                                   cache_window=config.get("summary_cache_window", 32))
         self.compactor.start()
 
     def dispatch(self, method: str, params: dict, cancelled=None):
@@ -119,6 +120,8 @@ class Service:
                         "pending_leaves": sum(Part(0, i) not in mem.nodes for i in range(len(mem.messages))),
                         "queued_nodes": sum(p not in compactor.busy for p in mem.candidates()),
                         "worker_limit": compactor.jobs, "pid": os.getpid(),
+                        "summary_cache_window": compactor.cache_window,
+                        "cached_context_windows": len(compactor.contexts),
                         "metrics": self.telemetry.snapshot(),
                         "busy": [f"{p.start}+{p.n}" for p in sorted(compactor.busy)],
                         "failures": {f"{p.start}+{p.n}": e for p, e in compactor.failed.items()}}

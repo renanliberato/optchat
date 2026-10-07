@@ -284,17 +284,34 @@ class Memory:
             return self.messages[part.i].size
         return sum(self.nodes[c].size for c in self.children(part)) + 1
 
-    def compact_context(self, part: Part) -> str:
-        end = part.start if part.l == 0 else part.end
+    def context_lines(self, start: int, end: int) -> list[str]:
+        """Intersect the view with a historical range, splitting crossing nodes.
+
+        A coarsened view node may include later messages. Never leak those into
+        an earlier summary, or lose its earlier children at a snapshot boundary.
+        Pending leaves use their durable source so concurrent work has context.
+        Caller holds cv.
+        """
         texts = []
+        def visit(p):
+            if p.end <= start or p.start >= end:
+                return
+            if p.start >= start and p.end <= end and p in self.nodes:
+                texts.append(self.nodes[p].text.replace("\n", " "))
+            elif p.l:
+                for child in self.children(p):
+                    visit(child)
+            else:
+                texts.append(self.messages[p.i].source.replace("\n", " "))
         for p in self.view:
             if p.start >= end:
                 break
-            if p not in self.nodes:
-                # Concurrent batches can be built ahead of a pending one; the
-                # view only shows what is built, so it ends at the first gap.
-                break
-            texts.append(self.nodes[p].text.replace("\n", " "))
+            visit(p)
+        return texts
+
+    def compact_context(self, part: Part) -> str:
+        end = part.start if part.l == 0 else part.end
+        texts = self.context_lines(0, end)
         # Keep the most recent lines within the view budget; an over-budget view
         # (tainted by failures, or a tiny configured budget) must not overflow
         # the provider's input limit.

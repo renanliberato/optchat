@@ -248,6 +248,42 @@ Same-level nodes (consecutive leaves, or pairs of adjacent lines) are compressed
 in one model call (`batch_leaves`, default 8, `1` disables batching), and several
 independent frontier batches run at once; a reply that does not yield exactly one
 valid line per item falls back to per-item calls.
+
+Summarization now reuses an older context snapshot for each window of 32 nodes
+at a given tree level (`summary_cache_window`; `0` restores the changing-view
+layout). A fresh `<recent_chat>` tail carries intervening decisions, including
+pending predecessors; the two blocks together stay within the context budget.
+The snapshot survives view coarsening. Historical nodes crossing a cutoff are
+split into their children, so later messages cannot leak into earlier summaries.
+This also works with `batch_leaves: 1`: each node still has its own conversation
+and correction history, while its input prefix is shared with other nodes.
+
+OpenRouter nodes share a `session_id` for provider sticky routing. One actual
+summary warms a cold prefix before other workers use it concurrently; no extra
+warm-up request is made. On OpenAI GPT-5.6 and GPT-6 models, explicit caching marks
+only the shared snapshot, leaving unique sources and fresh tails uncached and
+avoiding cache-write charges on those one-off tokens. Other models retain
+automatic caching. `openrouter_explicit_cache: false` disables the explicit
+controls. Short prefixes below a provider's minimum and expired/evicted caches
+can still miss; no artificial padding is added. ZDR and data-collection-deny
+routing remain mandatory; extended cache retention is not requested.
+
+To benchmark on a private history copy using different messages, rather than
+identical-prompt replays:
+
+```sh
+python3 scripts/benchmark-summary-cache.py --start 40246 --count 8 \
+  --budget .10 --output /tmp/optchat-cache-benchmark.json
+```
+
+This makes paid requests with the configured model/key. It stops starting calls
+once reported spending reaches `--budget` (the final call can cross that amount).
+Each arm has a cold benchmark namespace. Messages stream into isolated copies;
+archived merge summaries drive view coarsening without buying extra merges.
+The report separates first attempts from corrections, includes provider, actual
+cost, tokens, latency, byte-limit compliance, and source/reference/new summaries
+for manual fidelity review. It contains private history and is created with
+mode 0600; keep it outside version control. The running chat is never modified.
 Defaults are 512-byte summary targets and a 128,000-byte view budget. The budget
 counts summary text, as in the spec; addressing markup adds overhead. Oversize
 summaries or very small configured budgets can leave an irreducible view over
