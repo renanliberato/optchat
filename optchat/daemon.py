@@ -199,7 +199,7 @@ class Client:
         try:
             process = subprocess.Popen([sys.executable, "-m", "optchat", "--home", str(self.home), "serve"],
                                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                       env=env, start_new_session=True)
+                                       cwd=str(self.home), env=env, start_new_session=True)
         finally:
             log.close()
         deadline = time.monotonic() + 10

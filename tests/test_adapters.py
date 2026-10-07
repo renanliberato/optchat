@@ -125,8 +125,8 @@ class AdapterTests(unittest.TestCase):
     def fake_codex(self, events):
         path = self.home / "fake-codex"
         capture = self.home / "codex-calls.jsonl"
-        script = (f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
-                  f"Path({str(capture)!r}).open('a').write(json.dumps({{'argv': sys.argv[1:], 'prompt': sys.stdin.read()}}) + '\\n')\n"
+        script = (f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
+                  f"Path({str(capture)!r}).open('a').write(json.dumps({{'argv': sys.argv[1:], 'prompt': sys.stdin.read(), 'cwd': os.getcwd()}}) + '\\n')\n"
                   f"for event in {events!r}:\n    print(json.dumps(event), flush=True)\n")
         path.write_text(script)
         path.chmod(0o700)
@@ -149,6 +149,7 @@ class AdapterTests(unittest.TestCase):
             self.assertIn(flag, calls[1]["argv"])
         self.assertIn('model_reasoning_effort="high"', calls[1]["argv"])
         self.assertTrue(any(a.startswith("developer_instructions=") for a in calls[1]["argv"]))
+        self.assertFalse(Path(calls[0]["cwd"]).exists())
 
     def test_codex_summarizer_reports_missing_reply(self):
         binary, _ = self.fake_codex([{"type": "error", "message": "quota exhausted"}])

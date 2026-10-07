@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -60,8 +61,12 @@ class ClaudeConversation:
                    "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "",
                    "--system-prompt", COMPACT]
         command += ["--resume" if self.started else "--session-id", self.session]
-        result = subprocess.run(command, input=text, capture_output=True, text=True,
-                                timeout=self.timeout, env={**os.environ, "OPTCHAT_INTERNAL": "1"})
+        # No project instructions or files are needed for compaction, and a
+        # stable cwd survives the daemon's directory being moved or deleted.
+        with tempfile.TemporaryDirectory(prefix="optchat-summary-") as cwd:
+            result = subprocess.run(command, input=text, capture_output=True, text=True,
+                                    timeout=self.timeout, cwd=cwd,
+                                    env={**os.environ, "OPTCHAT_INTERNAL": "1"})
         if result.returncode:
             raise RuntimeError(f"Claude compactor exited {result.returncode}: {result.stderr[-2000:]}")
         reply = json.loads(result.stdout)
@@ -99,8 +104,12 @@ class CodexConversation:
                    "--sandbox", "read-only", "--ignore-user-config", "--model", self.model,
                    "-c", "model_reasoning_effort=" + json.dumps(self.effort),
                    "-c", "developer_instructions=" + json.dumps(COMPACT, ensure_ascii=False), "-"]
-        result = subprocess.run(command, input=self.transcript(text), capture_output=True, text=True,
-                                timeout=self.timeout, env={**os.environ, "OPTCHAT_INTERNAL": "1"})
+        # No project instructions or files are needed for compaction, and a
+        # stable cwd survives the daemon's directory being moved or deleted.
+        with tempfile.TemporaryDirectory(prefix="optchat-summary-") as cwd:
+            result = subprocess.run(command, input=self.transcript(text), capture_output=True, text=True,
+                                    timeout=self.timeout, cwd=cwd,
+                                    env={**os.environ, "OPTCHAT_INTERNAL": "1"})
         if result.returncode:
             raise RuntimeError(f"Codex compactor exited {result.returncode}: {result.stderr[-2000:]}")
         reply, errors = "", []
