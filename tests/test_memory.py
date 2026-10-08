@@ -387,6 +387,86 @@ class CompactorTests(unittest.TestCase):
                 self.assertEqual(len(calls), expected, f"batch={batch}")
                 self.assertTrue(all(Part(0, i) in mem.nodes for i in range(3)))
 
+    def test_overflow_patterns(self):
+        from optchat.compactor import OVERFLOW
+        for message in [
+            "Codex compactor exited 1: turn/start failed: Input exceeds the maximum length of 1048576 characters",
+            "OpenRouter compactor exited 400: This model's maximum context length is 128000 tokens",
+            "Claude compactor exited 1: prompt is too long: 213456 tokens > 200000 maximum",
+            "input_too_large",
+            "The input token count (150000) exceeds the maximum number of tokens allowed (128000)",
+        ]:
+            self.assertRegex(message, OVERFLOW)
+        self.assertNotRegex("transient", OVERFLOW)
+        self.assertNotRegex("Another writer owns the home", OVERFLOW)
+
+    def test_over_length_build_truncates_source_and_retries(self):
+        with tempfile.TemporaryDirectory() as folder, Memory(Path(folder), 64, 256) as mem:
+            mem.append("user", "huge source " * 2000)
+            calls, reports = [], []
+
+            class Overflowing:
+                limit = None
+
+                def ask(self, prompt):
+                    calls.append(prompt)
+                    self.limit = self.limit or len(prompt) // 2
+                    if len(prompt) > self.limit:
+                        raise RuntimeError("Codex compactor exited 1: turn/start failed: "
+                                           "Input exceeds the maximum length of 1048576 characters")
+                    return "user: condensed"
+
+            worker = Compactor(mem, Overflowing, report=reports.append)
+            worker.build(Part(0, 0))
+            worker.close()
+            self.assertEqual(mem.nodes[Part(0, 0)].text, "user: condensed")
+            self.assertGreater(len(calls), 1)
+            self.assertLess(len(calls[-1]), len(calls[0]))
+            self.assertEqual(len(reports), 1)
+            self.assertIn("truncating the largest source", reports[0])
+
+    def test_over_length_batch_truncates_only_the_offending_source(self):
+        with tempfile.TemporaryDirectory() as folder, Memory(Path(folder), 64, 256) as mem:
+            mem.append("user", "small source " * 6)
+            mem.append("user", "huge source " * 2000)
+            calls = []
+
+            class Overflowing:
+                limit = None
+
+                def ask(self, prompt):
+                    calls.append(prompt)
+                    self.limit = self.limit or len(prompt) // 2
+                    if len(prompt) > self.limit:
+                        raise RuntimeError("input_too_large: request exceeds the maximum length")
+                    return "1. user: first\n2. user: second"
+
+            factory = unittest.mock.Mock(return_value=Overflowing())
+            worker = Compactor(mem, factory, batch=8)
+            worker.build_batch([Part(0, 0), Part(0, 1)])
+            worker.close()
+            self.assertGreater(len(calls), 1)
+            self.assertEqual(calls[-1].count("small source"), calls[0].count("small source"))
+            self.assertLess(calls[-1].count("huge source"), calls[0].count("huge source"))
+            self.assertEqual(mem.nodes[Part(0, 0)].text, "user: first")
+            self.assertEqual(mem.nodes[Part(0, 1)].text, "user: second")
+
+    def test_over_length_without_truncatable_source_still_fails(self):
+        with tempfile.TemporaryDirectory() as folder, Memory(Path(folder), 64, 256) as mem:
+            mem.append("user", "source" * 100)
+            state = {"tries": 0}
+
+            class Overflowing:
+                def ask(self, prompt):
+                    state["tries"] += 1
+                    raise RuntimeError("input_too_large: the request exceeds the maximum length")
+
+            worker = Compactor(mem, Overflowing)
+            with self.assertRaisesRegex(RuntimeError, "maximum length"):
+                worker.build(Part(0, 0))
+            worker.close()
+            self.assertEqual(state["tries"], 1)
+
     def test_background_failure_retries_and_settle_waits(self):
         with tempfile.TemporaryDirectory() as folder, Memory(Path(folder), 64, 256) as mem:
             mem.append("user", "source" * 100)

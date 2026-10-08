@@ -234,9 +234,10 @@ The command receives JSON on stdin:
 Print only the summary text to stdout, diagnostics to stderr, and exit nonzero
 on failure. Corrections resend the complete conversation, including previous
 assistant replies; the command must use it as conversation history. Commands
-are argv arrays, never executed through a shell. No excerpt/truncation fallback
-is used when a model fails. Failures retry every ten seconds; inspect `status`
-and `daemon.log`, or cancel a wait with Ctrl-C.
+are argv arrays, never executed through a shell. Failures are not downgraded to
+an excerpt; the one exception is a provider length-limit rejection, which cuts
+the largest source by ten percent and retries. Other failures retry every ten
+seconds; inspect `status` and `daemon.log`, or cancel a wait with Ctrl-C.
 
 ## Fidelity and limits
 
@@ -287,7 +288,9 @@ mode 0600; keep it outside version control. The running chat is never modified.
 Defaults are 512-byte summary targets and a 128,000-byte view budget. The budget
 counts summary text, as in the spec; addressing markup adds overhead. Oversize
 summaries or very small configured budgets can leave an irreducible view over
-budget; history is never truncated to force a fit.
+budget; history is never truncated to force a fit. A request the provider
+rejects for exceeding its length limit is retried with the largest source cut
+by ten percent, so a pathological message still becomes a summary.
 
 The wrappers deliberately use fresh invocations (`codex exec --ephemeral` and
 `claude -p --no-session-persistence`, or `opencode run`), without resume/continue. Hooks in a normal

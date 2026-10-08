@@ -34,6 +34,13 @@ OPENROUTER_ZDR = {"zdr": True, "data_collection": "deny"}
 RECENT_CHAT = "\n\n<recent_chat>\n"
 CORRECTION_ECHO = re.compile(r"^\s*(user|talk):\s*(prior|previous)\b.*\b(bytes|limit|cutoff|enforce)\b",
                              re.IGNORECASE)
+OVERFLOW = re.compile(
+    r"input_too_large|input too large|maximum length|context[_ ]length|context window|"
+    r"(?:prompt|input|text|message|request) (?:is )?too long|too many tokens|token limit|length limit|"
+    r"exceeds.{0,40}(?:tokens|characters|length)",
+    re.IGNORECASE)
+OVERFLOW_FLOOR = 2048
+OVERFLOW_PERCENT = 10
 
 
 class Conversation(Protocol):
@@ -411,13 +418,18 @@ class Compactor:
         if part.l:
             source = "\n".join(mem.nodes[c].text.replace("\n", " ") for c in mem.children(part))
         action = "Merge these two lines" if part.l else "Compress this message"
-        step = (f"For scale, this line is exactly {mem.node_bytes} bytes:\n{scale(mem.node_bytes)}\n\n"
-                f"{action} into one line, in at most {mem.node_bytes} bytes:\n{source}")
+        head = (f"For scale, this line is exactly {mem.node_bytes} bytes:\n{scale(mem.node_bytes)}\n\n"
+                f"{action} into one line, in at most {mem.node_bytes} bytes:\n")
+        sources = [source]
         conversation = self.factory()
-        prompt = context + "\n\n" + step
+        prompt = context + "\n\n" + head + sources[0]
         attempts = []
-        for _ in range(self.tries):
-            line = conversation.ask(prompt).strip()
+        for attempt in range(self.tries):
+            if attempt == 0:
+                line = self.ask_lenient(conversation, sources,
+                                        lambda items: context + "\n\n" + head + items[0]).strip()
+            else:
+                line = conversation.ask(prompt).strip()
             if not line:
                 raise ValueError("Compactor returned an empty summary")
             if attempts and CORRECTION_ECHO.match(line):
@@ -435,6 +447,26 @@ class Compactor:
         if not attempts:
             raise ValueError("Compactor echoed the size correction without shortening the line")
         self.save_node(part, min(attempts, key=byte_size))
+
+    def ask_lenient(self, conversation, sources: list[str], render) -> str:
+        """Ask, and while the provider rejects the request as too large, cut 10%
+        off the largest source and retry. A truncated source is still summarized."""
+        noted = False
+        while True:
+            try:
+                return conversation.ask(render(sources))
+            except Exception as exc:
+                if not OVERFLOW.search(str(exc)):
+                    raise
+                index = max(range(len(sources)), key=lambda i: byte_size(sources[i]))
+                size = byte_size(sources[index])
+                if size <= OVERFLOW_FLOOR:
+                    raise
+                sources[index] = cut_bytes(sources[index], size - max(1, size // OVERFLOW_PERCENT))
+                if not noted:
+                    noted = True
+                    self.report(f"Summary input exceeds the provider limit; truncating the largest "
+                                f"source by {OVERFLOW_PERCENT}% per retry")
 
     def context(self, part: Part) -> str:
         """Freeze history per 32 nodes; refresh only the bounded recent tail.
@@ -524,18 +556,22 @@ class Compactor:
 
     def ask_batch(self, conversation, context: str, sources: list[str], level: int = 0):
         mem = self.memory
-        count = len(sources)
+        parts = list(sources)
+        count = len(parts)
         if level == 0:
-            noun, action = "messages", "Compress each of the following"
-            messages = "\n\n".join(f"MESSAGE {index + 1}:\n{source}" for index, source in enumerate(sources))
+            noun, action, label = "messages", "Compress each of the following", "MESSAGE"
         else:
-            noun, action = "pairs", "Merge each of the following"
-            messages = "\n\n".join(f"PAIR {index + 1}:\n{source}" for index, source in enumerate(sources))
-        step = (f"For scale, each line is at most {mem.node_bytes} bytes:\n{scale(mem.node_bytes)}\n\n"
+            noun, action, label = "pairs", "Merge each of the following", "PAIR"
+        head = (f"For scale, each line is at most {mem.node_bytes} bytes:\n{scale(mem.node_bytes)}\n\n"
                 f"{action} {count} {noun} into its own line, in at most {mem.node_bytes} "
                 f"bytes each. Output exactly {count} lines and nothing else, one line per {noun[:-1]}, in the same "
-                f"order. Begin each line with \"N. \" where N is the {noun[:-1]} number, then the summary.\n{messages}")
-        reply = conversation.ask(context + "\n\n" + step).strip()
+                f"order. Begin each line with \"N. \" where N is the {noun[:-1]} number, then the summary.\n")
+
+        def render(items):
+            return context + "\n\n" + head + "\n\n".join(
+                f"{label} {index + 1}:\n{source}" for index, source in enumerate(items))
+
+        reply = self.ask_lenient(conversation, parts, render).strip()
         lines = [line.strip() for line in reply.splitlines() if line.strip()]
         if len(lines) != count:
             return None
